@@ -1,0 +1,27 @@
+[INFO] Scanning for projects...
+[INFO] ------------------------------------------------------------------------
+[INFO] Reactor Build Order:
+[INFO] 
+[INFO] ruoyi                                                              [pom]
+[INFO] ruoyi-common                                                       [jar]
+[INFO] ruoyi-system                                                       [jar]
+[INFO] ruoyi-framework                                                    [jar]
+[INFO] ruoyi-quartz                                                       [jar]
+[INFO] ruoyi-generator                                                    [jar]
+[INFO] ruoyi-admin                                                        [jar]
+[INFO] 
+[INFO] --------------------------< com.ruoyi:ruoyi >---------------------------
+[INFO] Building ruoyi 3.9.2                                               [1/7]
+[INFO]   from pom.xml
+[INFO] --------------------------------[ pom ]---------------------------------
+[INFO] 
+[INFO] -----------------------< com.ruoyi:ruoyi-common >-----------------------
+[INFO] Building ruoyi-common 3.9.2                                        [2/7]
+[INFO]   from ruoyi-common\pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ ruoyi-common ---
+[INFO] skip non existing resourceDirectory F:\PythonProject\vibocoding\bysj\RuoYi-Vue\ruoyi-common\src\main\resources
+[INFO] 
+[INFO] --- compiler:3.1:compile (default-compile) @ ruoyi-common ---
+[INFO] Changes detected - recompiling the module!

@@ -16,11 +16,11 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api import health
-from app.core.config import settings
-from app.core.errors import BizError, ErrorCode
-from app.core.middleware import RequestLogMiddleware
-from app.core.response import fail
+from app.api import health  # pyright: ignore[reportImplicitRelativeImport]
+from app.core.config import settings  # pyright: ignore[reportImplicitRelativeImport]
+from app.core.errors import BizError, ErrorCode  # pyright: ignore[reportImplicitRelativeImport]
+from app.core.middleware import RequestLogMiddleware  # pyright: ignore[reportImplicitRelativeImport]
+from app.core.response import fail  # pyright: ignore[reportImplicitRelativeImport]
 
 logging.basicConfig(
     level=logging.INFO,
