@@ -24,6 +24,6 @@ design-report（读取设计约束）
 
 ## 开发环境速记
 
-- 服务统一在 WSL 内运行；若依源码在 `RuoYi-Vue/`（独立 git 仓库），`bysj/ruoyi-admin`、`bysj/ruoyi-ui` 是空占位勿使用。
+- 服务统一在 WSL 内运行；若依源码在 `RuoYi-Vue/`（**已并入 bysj 主仓库**，提交 `81522ee`），`bysj/ruoyi-admin`、`bysj/ruoyi-ui` 是空占位勿使用。
 - MySQL/Redis 为 Docker 容器（端口 3307/6379）；Python 虚拟环境 `server/venv_wsl/`。
 - 详细环境见 `docs/环境版本清单.md`。
