@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
-# 若依后端一键构建脚本
-# 背景：本机安全删除策略会拦截 Maven 对旧构建产物的覆盖写入（SAFE_DELETE_BULK_CONFIRM），
-# 因此每次打包前先用 Python 清空各模块 target 目录（全新构建可绕过拦截）。
+# 若依后端一键构建脚本（WSL / Linux 版）
 set -e
-ROOT="F:/PythonProject/vibocoding/bysj/RuoYi-Vue"
+ROOT="$HOME/vibocoding/bysj/RuoYi-Vue"
 cd "$ROOT"
-
 echo "=== [1/2] 清空各模块 target 目录 ==="
-python - <<'PY'
-import os
-root = r'F:\PythonProject\vibocoding\bysj\RuoYi-Vue'
+python3 - "$ROOT" <<'PY'
+import os, sys
+root = sys.argv[1]
 for mod in ['ruoyi-common','ruoyi-system','ruoyi-framework','ruoyi-quartz','ruoyi-generator','ruoyi-admin']:
     tgt = os.path.join(root, mod, 'target')
     if not os.path.exists(tgt):
@@ -26,7 +23,6 @@ for mod in ['ruoyi-common','ruoyi-system','ruoyi-framework','ruoyi-quartz','ruoy
     print('cleaned:', mod)
 print('target cleanup done')
 PY
-
 echo "=== [2/2] Maven 打包 ruoyi-admin (skipTests) ==="
-"/f/PythonProject/vibocoding/bysj/scripts/mvnw-custom.sh" -pl ruoyi-admin -am package -DskipTests
+"$HOME/vibocoding/bysj/scripts/mvnw-custom.sh" -pl ruoyi-admin -am package -DskipTests
 echo "=== BUILD DONE ==="

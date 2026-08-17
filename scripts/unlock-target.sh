@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 打包前清理：移除 RuoYi-Vue 各模块 target 下文件的 append-only 属性（沙箱自动附加导致 Maven 无法覆盖写入）
+# 打包前清理：移除 target 下文件只读/不可变属性（WSL / Linux 版）
 set -e
-ROOT="F:/PythonProject/vibocoding/bysj/RuoYi-Vue"
+ROOT="${ROOT:-$HOME/vibocoding/bysj/RuoYi-Vue}"
 for dir in "$ROOT"/ruoyi-*/target; do
   [ -d "$dir" ] || continue
   find "$dir" -type f 2>/dev/null | while read -r f; do

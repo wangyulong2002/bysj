@@ -1,1 +1,18 @@
+# RuoYi 独立 git 仓库，从外层索引移除
 RuoYi-Vue/
+
+# 日志与运行产物
+logs/
+*.log
+server/logs_fastapi.txt
+
+# 敏感配置（含密码/密钥，不入库）
+server/.env
+
+# 上传文件目录（不入 web 可执行路径，独立存储）
+uploads/
+
+# Python 运行产物
+__pycache__/
+*.pyc
+.pytest_cache/

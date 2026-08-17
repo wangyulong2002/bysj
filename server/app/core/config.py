@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     FILE_MAX_SIZE_MB: int = 10
     FILE_ALLOWED_TYPES: str = "jpg,png,gif,pdf,docx,xlsx"
 
+    # 幂等（3.6/P1-09）：Idempotency-Key 缓存保留秒数
+    IDEMPOTENCY_EXPIRE_SECONDS: int = 86400
+
     # 备份
     BACKUP_DIR: str = "/backup/mysql"
     BACKUP_RETENTION_DAYS: int = 30
@@ -88,6 +91,23 @@ class Settings(BaseSettings):
         if self.CORS_ALLOWED_ORIGINS == "*":
             return ["*"]
         return [o.strip() for o in self.CORS_ALLOWED_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def file_upload_dir(self) -> Path:
+        """上传目录：相对路径解析到项目根（bysj/），独立于 web 可执行路径（9.2）。"""
+        p = Path(self.FILE_UPLOAD_DIR)
+        if p.is_absolute():
+            return p
+        return BASE_DIR.parent / p
+
+    @property
+    def file_max_size(self) -> int:
+        """文件大小上限（字节）。"""
+        return int(self.FILE_MAX_SIZE_MB) * 1024 * 1024
+
+    @property
+    def file_allowed_types(self) -> set[str]:
+        return {t.strip().lower() for t in self.FILE_ALLOWED_TYPES.split(",") if t.strip()}
 
     def validate_required(self) -> None:
         """启动时校验必填配置项（9.3）。"""

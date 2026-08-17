@@ -1,0 +1,15 @@
+{
+  "pythonVersion": "3.13",
+  "venvPath": ".",
+  "venv": "venv",
+  "include": ["."],
+  "exclude": [
+    "venv",
+    "venv_wsl",
+    "**/__pycache__/**",
+    "**/.git/**",
+    "**/*.pyc"
+  ],
+  "typeCheckingMode": "basic",
+  "useLibraryCodeForTypes": true
+}
