@@ -7,12 +7,14 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-BASE_DIR = Path(__file__).resolve().parents[2]  # server/
+BASE_DIR = Path(__file__).resolve().parents[2]   # server/
+PROJECT_ROOT = BASE_DIR.parent                     # bysj/（项目根，统一 .env 所在）
 
 
 class Settings(BaseSettings):
+    # 配置来源优先级：环境变量 > 项目根 .env > server/.env（本地兼容，已弃用）
     model_config = SettingsConfigDict(
-        env_file=str(BASE_DIR / ".env"),
+        env_file=(str(PROJECT_ROOT / ".env"), str(BASE_DIR / ".env")),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -31,6 +33,8 @@ class Settings(BaseSettings):
     MYSQL_PASS: str = ""
     MYSQL_DB: str = "campus"
     MYSQL_CHARSET: str = "utf8mb4"
+    # 统一 .env 的库名键（可选）：配置了则覆盖 MYSQL_DB
+    MYSQL_DB_CAMPUS: str | None = None
 
     # Redis
     REDIS_URL: str = "redis://127.0.0.1:6379/0"
@@ -79,10 +83,11 @@ class Settings(BaseSettings):
 
     @property
     def database_url(self) -> str:
-        """SQLAlchemy 连接串。"""
+        """SQLAlchemy 连接串（业务库：优先 MYSQL_DB_CAMPUS，兼容 MYSQL_DB）。"""
+        db = self.MYSQL_DB_CAMPUS or self.MYSQL_DB
         return (
             f"mysql+pymysql://{self.MYSQL_USER}:{self.MYSQL_PASS}"
-            f"@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DB}"
+            f"@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{db}"
             f"?charset={self.MYSQL_CHARSET}"
         )
 

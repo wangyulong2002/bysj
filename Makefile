@@ -137,9 +137,10 @@ all: ruoyi-admin ruoyi-ui fastapi
 ruoyi-admin:
 > @echo "===== 启动若依后端（端口 8080）====="
 > @if [ ! -f $(JAR_FILE) ]; then echo "  未找到构建产物 $(JAR_FILE)"; echo "  请先执行: make build-ruoyi"; exit 1; fi
+> @if [ ! -f $(ROOT)/.env ]; then echo "  缺少统一配置 $(ROOT)/.env，请先执行: cp .env.example .env"; exit 1; fi
 > @if ss -tlnp 2>/dev/null | grep -q ':8080 '; then echo "  8080 已被占用，先执行 make stop 或检查其他程序"; exit 1; fi
 > mkdir -p $(LOG_DIR)
-> cd $(RUIYI_ADMIN_DIR) && setsid env JAVA_HOME=$(JAVA_HOME_DIR) PATH="$(JAVA_HOME_DIR)/bin:$$PATH" java -jar target/ruoyi-admin.jar > $(LOG_DIR)/ruoyi-admin.log 2>&1 &
+> cd $(RUIYI_ADMIN_DIR) && bash -c 'set -a && source $(ROOT)/.env && set +a && exec env JAVA_HOME=$(JAVA_HOME_DIR) PATH="$(JAVA_HOME_DIR)/bin:$$PATH" java -jar target/ruoyi-admin.jar' > $(LOG_DIR)/ruoyi-admin.log 2>&1 &
 > @echo "  启动命令已执行，等待后端就绪（约 10 秒）..."
 > @sleep 10
 > @if ss -tlnp 2>/dev/null | grep -q ':8080 '; then echo "  成功：后端已监听 8080"; echo "  验证接口: http://127.0.0.1:8080/captchaImage"; else echo "  可能还在启动，请执行 make log-ruoyi-admin 查看日志"; fi

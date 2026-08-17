@@ -4,6 +4,10 @@ logs/
 server/logs_fastapi.txt
 
 # 敏感配置（含密码/密钥，不入库）
+# 统一配置：bysj/.env（真实值，忽略）；.env.example（模板，入库）
+.env
+.env.*
+!.env.example
 server/.env
 
 # 上传文件目录（不入 web 可执行路径，独立存储）
