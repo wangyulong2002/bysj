@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api import files, health  # pyright: ignore[reportImplicitRelativeImport]
+from app.api import auth, files, health  # pyright: ignore[reportImplicitRelativeImport]
 from app.core.config import settings  # pyright: ignore[reportImplicitRelativeImport]
 from app.core.errors import BizError, ErrorCode  # pyright: ignore[reportImplicitRelativeImport]
 from app.core.idempotency import IdempotencyMiddleware  # pyright: ignore[reportImplicitRelativeImport]
@@ -99,6 +99,8 @@ async def unknown_handler(request: Request, exc: Exception):
 # 健康检查按设计报告 9.6 / T0-6 挂载无前缀 GET /health，同时保留 /api/health 兼容
 app.include_router(health.router, tags=["health"])
 app.include_router(health.router, prefix=settings.API_PREFIX, tags=["health"])
+# 认证（3.4 / T1-2）
+app.include_router(auth.router, prefix=settings.API_PREFIX, tags=["auth"])
 # 文件上传/下载（5.3.14 / T0-7）
 app.include_router(files.router, prefix=settings.API_PREFIX, tags=["files"])
 
