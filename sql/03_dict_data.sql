@@ -1,23 +1,73 @@
 -- ============================================================
--- 03_dict_data.sql  字典数据初始化（T0-4 / 设计 2.2、4.6）
--- 依据设计报告：请假类型、公告类型、成绩等级、周次等字典（4.6）
+-- 03_dict_data.sql  字典表自建 + 字典数据初始化（T0-4 / 设计 5.2、2.2、4.6）
+-- 依据设计报告 v2.2：请假类型、公告类型、成绩等级、周次等字典（4.6）
 --
 -- 说明：
---   1) 字典类型/标签/值/排序为实施侧约定，设计报告未硬编码具体值，
---      此处给出自洽、符合若依规范的默认字典，后续可按需调整。
---   2) 幂等：先 DELETE 后 INSERT 指定 dict_type，可重复执行。
---   3) 写入若依库 ry。
+--   1) v2.0 起不再依赖若依 ry 库，sys_dict_type / sys_dict_data 在本库精简自建。
+--   2) 字典类型/标签/值/排序为实施侧约定，设计报告未硬编码具体值，
+--      此处给出自洽、符合系统约定的默认字典，后续可按需调整。
+--   3) 幂等：先 DROP 建表，再 DELETE+INSERT 指定 dict_type，可重复执行。
+--   4) DDL 权威（P0-1）：正式环境以 Django migrations 为准，本脚本仅初始化/演示用。
 -- ============================================================
 
-USE ry;
+USE campus;
 
--- 清空并重建涉及的字典类型与数据（幂等）
-DELETE d FROM sys_dict_data d
-    INNER JOIN sys_dict_type t ON d.dict_type = t.dict_type
-    WHERE t.dict_type IN ('campus_leave_type', 'campus_ann_type',
-                          'campus_score_level', 'campus_weekday',
-                          'campus_leave_status', 'campus_score_ratio',
-                          'campus_ann_status', 'campus_score_status');
+SET FOREIGN_KEY_CHECKS = 0;
+SET NAMES utf8mb4;
+
+-- ============================================================
+-- 字典类型表（精简自建，对应设计 5.2）
+-- ============================================================
+DROP TABLE IF EXISTS `sys_dict_type`;
+CREATE TABLE `sys_dict_type` (
+    `id`          bigint       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    `dict_name`   varchar(100) NOT NULL COMMENT '字典名称',
+    `dict_type`   varchar(100) NOT NULL COMMENT '字典类型（唯一）',
+    `status`      char(1)      NOT NULL DEFAULT '0' COMMENT '状态：0正常 1停用',
+    `remark`      varchar(500) DEFAULT NULL COMMENT '备注',
+    `create_by`   bigint       DEFAULT NULL COMMENT '创建人',
+    `create_time` datetime     DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_by`   bigint       DEFAULT NULL COMMENT '更新人',
+    `update_time` datetime     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `del_flag`    char(1)      NOT NULL DEFAULT '0' COMMENT '逻辑删除',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_dict_type` (`dict_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='字典类型表';
+
+-- ============================================================
+-- 字典数据表（精简自建，对应设计 5.2）
+-- ============================================================
+DROP TABLE IF EXISTS `sys_dict_data`;
+CREATE TABLE `sys_dict_data` (
+    `id`          bigint       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    `dict_sort`   int          NOT NULL DEFAULT 0 COMMENT '排序',
+    `dict_label`  varchar(100) NOT NULL COMMENT '标签',
+    `dict_value`  varchar(100) NOT NULL COMMENT '值',
+    `dict_type`   varchar(100) NOT NULL COMMENT '类型（关联 sys_dict_type）',
+    `css_class`   varchar(100) DEFAULT NULL COMMENT '样式 class',
+    `list_class`  varchar(100) DEFAULT NULL COMMENT '列表样式',
+    `is_default`  char(1)      NOT NULL DEFAULT 'N' COMMENT '是否默认：Y/N',
+    `status`      char(1)      NOT NULL DEFAULT '0' COMMENT '状态：0正常 1停用',
+    `remark`      varchar(500) DEFAULT NULL COMMENT '备注',
+    `create_by`   bigint       DEFAULT NULL COMMENT '创建人',
+    `create_time` datetime     DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_by`   bigint       DEFAULT NULL COMMENT '更新人',
+    `update_time` datetime     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `del_flag`    char(1)      NOT NULL DEFAULT '0' COMMENT '逻辑删除',
+    PRIMARY KEY (`id`),
+    KEY `idx_dict_data_type` (`dict_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='字典数据表';
+
+SET FOREIGN_KEY_CHECKS = 1;
+
+-- ============================================================
+-- 字典数据（幂等：DELETE + INSERT 指定 dict_type）
+-- ============================================================
+DELETE FROM sys_dict_data
+    WHERE dict_type IN ('campus_leave_type', 'campus_ann_type',
+                        'campus_score_level', 'campus_weekday',
+                        'campus_leave_status', 'campus_score_ratio',
+                        'campus_ann_status', 'campus_score_status');
 DELETE FROM sys_dict_type
     WHERE dict_type IN ('campus_leave_type', 'campus_ann_type',
                         'campus_score_level', 'campus_weekday',

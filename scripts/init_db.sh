@@ -4,18 +4,21 @@
 # 依据《智慧校园信息管理系统 设计报告》第 5 章 / 子任务 T0-4
 #
 # 功能：按顺序执行 sql/ 下的初始化脚本，可重复执行（幂等）。
-#  1. 00_create_database.sql   创建 campus 数据库（IF NOT EXISTS）
-#  2. 01_sys_user_extend.sql   为 ry.sys_user 增加扩展字段（幂等）
-#  3. 02_business_tables.sql   创建全部业务表（DROP+CREATE 重建，含 version 列）
-#  4. 03_dict_data.sql         初始化字典数据（DELETE+INSERT）
-#  5. 04_add_version_columns.sql 乐观锁 version 列迁移（幂等，对已存在库增量补列）
+#  1. 00_create_database.sql   创建 campus 数据库（IF NOT EXISTS，utf8mb4_0900_ai_ci）
+#  2. （DDL 权威）sys_user 与全部业务表由 Django migrations 创建：
+#        cd bysj/manage && ../server/venv_wsl/bin/python manage.py migrate
+#     （users.CustomUser → sys_user；apps → 19 业务表 + 2 字典表）
+#  3. 02_business_tables.sql   业务表建表 DDL（演示/兼容导出参考；正式以 Django 为准）
+#  4. 03_dict_data.sql         字典数据初始化（DELETE+INSERT，表由 Django 创建）
+#  5. 04_add_version_columns.sql 乐观锁 version 列迁移（幂等，兼容旧库增量补列）
 #
 # 用法：
 #  ../../scripts/init_db.sh                 # 使用默认连接（Docker MySQL 3307）
 #  MYSQL_HOST=x MYSQL_PORT=3306 MYSQL_PASS=y ../../scripts/init_db.sh
 #
-# 注意：02_business_tables.sql 会 DROP 并重建业务表（清空数据），
-#       仅用于初始化/开发环境，勿在生产重复执行。
+# 注意（P0-1）：DDL 权威为 Django migrations；本脚本仅作初始化/演示/兼容导出，
+#       sys_user 已由 Django 创建时勿再执行旧 01 建表；02 会 DROP 并重建业务表
+#       （清空数据），仅用于初始化/开发环境，勿在生产重复执行。
 # ============================================================
 set -euo pipefail
 
@@ -58,7 +61,8 @@ echo " SQL 目录: $SQL_DIR"
 echo "======================================================"
 
 run_sql "$SQL_DIR/00_create_database.sql"
-run_sql "$SQL_DIR/01_sys_user_extend.sql"
+echo "==> 提示: sys_user 与业务表 DDL 权威为 Django migrations（P0-1）"
+echo "    执行: cd bysj/manage && ../server/venv_wsl/bin/python manage.py migrate"
 run_sql "$SQL_DIR/02_business_tables.sql"
 run_sql "$SQL_DIR/03_dict_data.sql"
 run_sql "$SQL_DIR/04_add_version_columns.sql"
@@ -66,5 +70,5 @@ run_sql "$SQL_DIR/04_add_version_columns.sql"
 echo "======================================================"
 echo " 数据库初始化完成。"
 echo " 业务表: USE campus; SHOW TABLES;"
-echo " 字典:   SELECT dict_type, dict_label, dict_value FROM ry.sys_dict_data WHERE dict_type LIKE 'campus_%';"
+echo " 字典:   SELECT dict_type, dict_label, dict_value FROM campus.sys_dict_data WHERE dict_type LIKE 'campus_%';"
 echo "======================================================"

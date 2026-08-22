@@ -45,16 +45,16 @@ def test_user_id() -> int:
     with engine.begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO ry.sys_user "
-                "(user_id, user_name, nick_name, password, status, del_flag, role_code, password_version) "
-                "VALUES (:uid, 'tester', '测试账号', '', '0', '0', 'admin', 0)"
+                "INSERT INTO sys_user "
+                "(id, username, nick_name, password, is_superuser, status, del_flag, role_code, password_version, create_time, update_time) "
+                "VALUES (:uid, 'tester', '测试账号', '', 0, '0', '0', 'admin', 0, NOW(), NOW())"
             ),
             {"uid": TEST_USER_ID},
         )
     yield TEST_USER_ID
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM campus_file WHERE uploader_id = :uid"), {"uid": TEST_USER_ID})
-        conn.execute(text("DELETE FROM ry.sys_user WHERE user_id = :uid"), {"uid": TEST_USER_ID})
+        conn.execute(text("DELETE FROM sys_user WHERE id = :uid"), {"uid": TEST_USER_ID})
 
 
 @pytest.fixture(scope="session")

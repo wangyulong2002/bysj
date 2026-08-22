@@ -1,7 +1,7 @@
 """认证依赖（3.4、3.5 / T0-7 鉴权基础）。
 
 `get_current_user`：解析 Authorization: Bearer <JWT>，
-解码后比对 `ry.sys_user.password_version`（4.5 改密使旧 token 失效），
+解码后比对 `sys_user.password_version`（4.5 改密使旧 token 失效），
 不一致返回 4011。返回当前登录用户身份。
 """
 from dataclasses import dataclass
@@ -44,8 +44,8 @@ def get_current_user(
     with engine.connect() as conn:
         row = conn.execute(
             text(
-                "SELECT password_version FROM ry.sys_user "
-                "WHERE user_id = :uid AND del_flag = '0'"
+                "SELECT password_version FROM sys_user "
+                "WHERE id = :uid AND del_flag = '0'"
             ),
             {"uid": user_id},
         ).first()

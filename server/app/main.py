@@ -58,7 +58,8 @@ app.add_middleware(
 # 请求日志
 app.add_middleware(RequestLogMiddleware)
 
-# 幂等（3.6/P1-09）：Idempotency-Key 防重复提交（Redis 故障降级直通）
+# 幂等（3.6/P1-09）：Idempotency-Key 防重复提交
+# v2.2（P1-12）：幂等记录迁移 MySQL 唯一表 campus_idempotency_key（Redis 仅缓存），待实施
 app.add_middleware(IdempotencyMiddleware)
 
 

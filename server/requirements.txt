@@ -22,3 +22,8 @@ python-dotenv>=1.0
 # 测试（T0-6/T0-7 单元测试）
 pytest>=8.0
 httpx>=0.27
+
+# ===== 管理端（T0-1/T0-2，Django 5.2 LTS 对齐 Python 3.14，A-01）=====
+Django>=5.2,<5.3
+djangorestframework>=3.15
+djangorestframework-simplejwt>=5.3

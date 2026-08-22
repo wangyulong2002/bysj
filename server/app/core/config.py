@@ -44,16 +44,12 @@ class Settings(BaseSettings):
     JWT_EXPIRE: int = 7200
     JWT_ALGORITHM: str = "HS256"
 
-    # LLM（DeepSeek）
-    LLM_BASE_URL: str = "https://api.deepseek.com"
-    LLM_API_KEY: str = ""
+    # 火山引擎方舟（RAG，生成+向量化统一，按 Token 计费，9.3/8.2）
+    ARK_BASE_URL: str = "https://ark.cn-beijing.volces.com/api/v3"
+    ARK_API_KEY: str = ""
     LLM_MODEL: str = "deepseek-chat"
-
-    # Embedding（智谱）
-    EMB_BASE_URL: str = "https://open.bigmodel.cn"
-    EMB_API_KEY: str = ""
-    EMB_MODEL: str = "embedding-2"
-    EMB_DIM: int = 1024
+    EMB_MODEL: str = "doubao-embedding"
+    EMB_DIM: int = 2560
 
     # RAG
     RAG_TOP_N: int = 5

@@ -13,4 +13,8 @@ class FileOut(BaseModel):
     file_size: int
     storage_path: str
     uploader_id: int | None
+    owner_id: int | None
+    biz_type: str | None
+    biz_id: int | None
+    visibility: str
     create_time: datetime
