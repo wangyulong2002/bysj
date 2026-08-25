@@ -14,7 +14,7 @@
 #
 # 用法：
 #  ../../scripts/init_db.sh                 # 使用默认连接（Docker MySQL 3307）
-#  MYSQL_HOST=x MYSQL_PORT=3306 MYSQL_PASS=y ../../scripts/init_db.sh
+#  MYSQL_HOST=x MYSQL_PORT=3307 MYSQL_PASS=y ../../scripts/init_db.sh
 #
 # 注意（P0-1）：DDL 权威为 Django migrations；本脚本仅作初始化/演示/兼容导出，
 #       sys_user 已由 Django 创建时勿再执行旧 01 建表；02 会 DROP 并重建业务表

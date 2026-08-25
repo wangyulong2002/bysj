@@ -1,0 +1,37 @@
+{
+    "name" : "智慧校园",
+    "appid" : "__UNI__591850A",
+    "description" : "智慧校园信息管理系统 - 应用端（学生/教师/辅导员）",
+    "versionName" : "1.0.0",
+    "versionCode" : "100",
+    "transformPx" : false,
+    "app-plus" : {
+        "usingComponents" : true,
+        "nvueStyleCompiler" : "uni-app",
+        "compilerVersion" : 3,
+        "splashscreen" : {
+            "alwaysShowBeforeRender" : true,
+            "waiting" : true,
+            "autoclose" : true,
+            "delay" : 0
+        }
+    },
+    "quickapp" : {},
+    "mp-weixin" : {
+        "appid" : "wxb0987ed53c5072dd",
+        "setting" : {
+            "urlCheck" : false,
+            "es6" : true,
+            "minified" : true
+        },
+        "usingComponents" : true,
+        "permission" : {}
+    },
+    "h5" : {
+        "title" : "智慧校园信息管理系统",
+        "router" : {
+            "mode" : "hash"
+        }
+    },
+    "vueVersion" : "2"
+}

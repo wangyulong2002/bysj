@@ -17,23 +17,27 @@ from app.core.idempotency import IdempotencyMiddleware
 
 
 def _make_app():
+    """构造带幂等中间件的迷你测试应用（含 /echo 与 /ping 两个端点）。"""
     app = FastAPI()
     app.add_middleware(IdempotencyMiddleware)
     state = {"count": 0}
 
     @app.post("/echo")
     def echo():
+        """测试端点：计数 +1 并返回，用于验证幂等。"""
         state["count"] += 1
         return JSONResponse({"count": state["count"]})
 
     @app.get("/ping")
     def ping():
+        """测试端点：GET 探活，用于验证读请求不受幂等影响。"""
         return JSONResponse({"ok": True})
 
     return app, state
 
 
 def _sha(s: str) -> str:
+    """计算字符串 SHA-256（用于幂等键/清理）。"""
     return hashlib.sha256(s.encode()).hexdigest()
 
 
@@ -62,6 +66,7 @@ def _cleanup(*keys):
 
 
 def test_same_key_returns_cached_result():
+    """相同 Idempotency-Key 重复 POST 只执行一次业务并落库 MySQL 唯一表。"""
     app, state = _make_app()
     key = "key-" + uuid.uuid4().hex
     try:
@@ -83,6 +88,7 @@ def test_same_key_returns_cached_result():
 
 
 def test_different_keys_execute_separately():
+    """不同幂等键各自独立执行。"""
     app, state = _make_app()
     k1, k2 = "key-a-" + uuid.uuid4().hex, "key-b-" + uuid.uuid4().hex
     try:
@@ -95,6 +101,7 @@ def test_different_keys_execute_separately():
 
 
 def test_post_without_header_not_idempotent():
+    """未携带 Idempotency-Key 的 POST 不幂等（每次执行）。"""
     app, state = _make_app()
     with TestClient(app) as c:
         c.post("/echo")
@@ -103,6 +110,7 @@ def test_post_without_header_not_idempotent():
 
 
 def test_get_not_idempotent():
+    """GET 请求不受幂等中间件影响。"""
     app, state = _make_app()
     with TestClient(app) as c:
         c.get("/ping")
@@ -118,6 +126,7 @@ def test_redis_down_still_idempotent_via_mysql(monkeypatch):
     key = "k-down-" + uuid.uuid4().hex
 
     def raise_error(*args, **kwargs):
+        """模拟 Redis 故障：任何调用直接抛异常。"""
         raise idem_mod.redis_client.RedisError("redis down")
 
     monkeypatch.setattr(idem_mod.redis_client, "get", raise_error)

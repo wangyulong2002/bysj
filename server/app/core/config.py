@@ -73,6 +73,11 @@ class Settings(BaseSettings):
     # CORS
     CORS_ALLOWED_ORIGINS: str = "*"
 
+    # 微信小程序登录（B-01，T1-4）：code2session 换 openid
+    WECHAT_APPID: str = ""
+    WECHAT_SECRET: str = ""
+    WECHAT_API_BASE_URL: str = "https://api.weixin.qq.com"  # 联调可改本地 mock
+
     # 登录安全
     LOGIN_MAX_FAIL: int = 5
     LOGIN_LOCK_MINUTES: int = 10
@@ -89,6 +94,7 @@ class Settings(BaseSettings):
 
     @property
     def cors_origins(self) -> list[str]:
+        """CORS 白名单：'*' 表示全放行（开发期），否则按逗号拆分。"""
         if self.CORS_ALLOWED_ORIGINS == "*":
             return ["*"]
         return [o.strip() for o in self.CORS_ALLOWED_ORIGINS.split(",") if o.strip()]
@@ -108,6 +114,7 @@ class Settings(BaseSettings):
 
     @property
     def file_allowed_types(self) -> set[str]:
+        """允许上传的文件扩展名集合（小写去空白）。"""
         return {t.strip().lower() for t in self.FILE_ALLOWED_TYPES.split(",") if t.strip()}
 
     def validate_required(self) -> None:
@@ -125,6 +132,7 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """获取全局配置单例（缓存 + 启动必填校验）。"""
     settings = Settings()
     settings.validate_required()
     return settings

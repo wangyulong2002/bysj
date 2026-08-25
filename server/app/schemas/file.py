@@ -5,6 +5,8 @@ from pydantic import BaseModel, ConfigDict
 
 
 class FileOut(BaseModel):
+    """文件上传成功后的返回结构（5.3.14 / T0-7）。"""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: int

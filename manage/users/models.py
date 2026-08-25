@@ -13,6 +13,7 @@ class CustomUserManager(BaseUserManager):
     """CustomUser 管理器：提供 create_user / get_by_natural_key 等。"""
 
     def create_user(self, username, password=None, **extra_fields):
+        """创建普通用户：username 必填，可选密码（自动哈希）。"""
         if not username:
             raise ValueError("username 必填")
         user = self.model(username=username, **extra_fields)
@@ -22,6 +23,7 @@ class CustomUserManager(BaseUserManager):
         return user
 
     def create_superuser(self, username, password=None, **extra_fields):
+        """创建超级管理员（is_superuser=True，status=0，role=admin）。"""
         extra_fields.setdefault("is_superuser", True)
         extra_fields.setdefault("status", "0")
         extra_fields.setdefault("role_code", "admin")
@@ -67,6 +69,7 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
         ordering = ["id"]
 
     def __str__(self) -> str:  # pragma: no cover
+        """Admin/调试展示：返回登录账号。"""
         return self.username
 
     @property

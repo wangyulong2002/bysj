@@ -29,6 +29,7 @@ class Command(BaseCommand):
     help = "初始化四角色演示账号（幂等：已存在则跳过/重置密码）"
 
     def handle(self, *args, **options):
+        """执行命令：按 DEMO_USERS 创建/更新四角色演示账号（幂等）。"""
         created, updated = 0, 0
         for u in DEMO_USERS:
             username = u.pop("username")

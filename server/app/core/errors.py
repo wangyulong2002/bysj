@@ -59,16 +59,22 @@ class BizError(Exception):
 
 
 class ParamError(BizError):
+    """参数错误（4001）。"""
+
     def __init__(self, message: str = None):
         super().__init__(ErrorCode.PARAM_ERROR, message)
 
 
 class UnauthorizedError(BizError):
+    """未登录/登录已过期（4011）。"""
+
     def __init__(self, message: str = None):
         super().__init__(ErrorCode.UNAUTHORIZED, message)
 
 
 class ForbiddenError(BizError):
+    """无操作权限（4031，功能权限）。"""
+
     def __init__(self, message: str = None):
         super().__init__(ErrorCode.FORBIDDEN, message)
 
@@ -80,11 +86,15 @@ class ForbiddenDataError(BizError):
 
 
 class ConflictError(BizError):
+    """数据冲突/并发更新（4091）。"""
+
     def __init__(self, message: str = None):
         super().__init__(ErrorCode.CONFLICT, message)
 
 
 class RateLimitedError(BizError):
+    """请求过于频繁（4291，限流）。"""
+
     def __init__(self, message: str = None):
         super().__init__(ErrorCode.RATE_LIMITED, message)
 

@@ -59,11 +59,13 @@ def test_user_id() -> int:
 
 @pytest.fixture(scope="session")
 def auth_headers(test_user_id: int) -> dict:
+    """构造测试用户的 Bearer JWT 请求头。"""
     token = create_access_token(user_id=test_user_id, role_code="admin", password_version=0)
     return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture(scope="session")
 def client() -> TestClient:
+    """提供 FastAPI TestClient 实例（会话级）。"""
     with TestClient(app) as c:
         yield c

@@ -21,6 +21,7 @@ PROJECT_ROOT = BASE_DIR.parent  # bysj/
 
 # 从项目根 .env 读取（与 FastAPI 统一配置，见设计 9.3）
 def _load_dotenv():
+    """从项目根 .env 读取键值对（与 FastAPI 统一配置，见设计 9.3）。"""
     env_file = PROJECT_ROOT / ".env"
     if not env_file.exists():
         return {}
@@ -141,7 +142,8 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
-    "DEFAULT_RENDERER_CLASSES": ("rest_framework.renderers.JSONRenderer",),
+    "DEFAULT_RENDERER_CLASSES": ("apps.renderers.ApiJSONRenderer",),
+    "EXCEPTION_HANDLER": "apps.views.api_exception_handler",
 }
 
 from datetime import timedelta  # noqa: E402

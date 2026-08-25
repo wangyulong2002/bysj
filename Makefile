@@ -2,6 +2,22 @@
 # 智慧校园信息管理系统（bysj）— 一键启动/停止/日志（新手友好版）
 # ============================================================
 #
+# ============================================================
+# 常用命令速查（完整说明见底部 make help）
+# ============================================================
+#   环境自检   make doctor
+#   一键启动   make all             （Django 管理端 + FastAPI）
+#   单服务     make django / make fastapi
+#   H5 前端    make h5              （起 FastAPI + 前端 :8080）
+#   小程序     make mp-dev          （编译）  make mp-sync（同步产物）
+#              make mp-open         （打开微信开发者工具）
+#   停止       make stop
+#   状态日志   make status / make logs
+#   数据库     make db-status / make init-db
+#   常用流程   make doctor → make all → make h5
+#              make mp-dev + make mp-sync-watch + make mp-open
+# ============================================================
+#
 # 【这是什么】
 #   本文件是项目的"启动遥控器"。你不需要记任何命令，
 #   只要在项目文件夹里输入  make 目标名  就能操作。
@@ -22,6 +38,8 @@
 # 【本机有哪些服务】
 #   fastapi   应用后端（Python FastAPI）         端口 8000
 #   django    管理后端（Python Django + DRF）    端口 8001
+#   h5        应用前端（uni-app H5 dev server）  端口 8080
+#   mp        应用前端（uni-app 小程序，微信开发者工具加载）
 #
 # 【依赖环境（WSL 内）】
 #   Python 3.11+（venv: server/venv_wsl）
@@ -47,11 +65,16 @@ LOG_DIR := $(ROOT)/logs
 VENV_PY := $(ROOT)/server/venv_wsl/bin/python
 DJANGO_DIR := $(ROOT)/manage
 SERVER_DIR := $(ROOT)/server
+# 微信开发者工具 CLI（Windows 侧）
+WX_CLI := C:\Program Files (x86)\Tencent\微信web开发者工具\cli.bat
+# 小程序产物同步到 Windows 侧的项目目录
+MP_WIN_DIR := D:\bysj-mp-weixin
 
 # 声明所有目标名（make 会忽略与文件同名的目录，避免歧义）
 .PHONY: help doctor all django fastapi \
         stop stop-django stop-fastapi \
-        status logs log-django log-fastapi db-status init-db
+        status logs log-django log-fastapi db-status init-db \
+        h5 h5-build mp-dev mp-build mp-sync mp-sync-watch mp-open
 
 # ============================================================
 # 默认目标：直接输入 make 就会显示这份帮助
@@ -67,6 +90,15 @@ help:
 > @echo "    make all              一键启动全部服务（Django 管理端 + FastAPI）"
 > @echo "    make django           启动 Django 管理端 (端口 8001)"
 > @echo "    make fastapi          启动应用后端   (Python, 端口 8000)"
+> @echo ""
+> @echo "  前端（uni-app，方案 A）："
+> @echo "    make h5               一键启动 H5（FastAPI + dev server，:8080）"
+> @echo "    make mp-dev           编译小程序（dev 模式，配合微信开发者工具）"
+> @echo "    make mp-sync          同步小程序产物 → D:/bysj-mp-weixin"
+> @echo "    make mp-sync-watch    监听并自动同步小程序产物（配合 mp-dev）"
+> @echo "    make mp-open          同步 + 打开微信开发者工具（需已扫码登录）"
+> @echo "    make h5-build         构建 H5 产物（dist/dev/h5）"
+> @echo "    make mp-build         构建小程序产物（dist/dev/mp-weixin）"
 > @echo ""
 > @echo "  停止服务："
 > @echo "    make stop             停止全部服务"
@@ -191,6 +223,44 @@ log-django:
 log-fastapi:
 > @echo "实时查看 FastAPI 日志（按 Ctrl+C 退出）"
 > @tail -f $(LOG_DIR)/fastapi.log 2>/dev/null || echo "(暂无日志，先执行 make fastapi)"
+
+# ============================================================
+# 前端（uni-app CLI 工程，方案 A）
+# 依赖：uniapp/ 为 CLI 工程（src/ + package.json），Node 24 + webpack5
+# ============================================================
+
+# H5 一键启动：起 FastAPI + npm run dev:h5（脚本 scripts/run-h5.sh）
+h5:
+> @bash $(ROOT)/scripts/run-h5.sh
+
+# H5 构建产物（dist/dev/h5）
+h5-build:
+> @echo "===== 构建 H5（build:h5）====="
+> @cd $(ROOT)/uniapp && NODE_OPTIONS=--openssl-legacy-provider npm run build:h5
+
+# 小程序 dev 编译（热更新，配合微信开发者工具加载 D:\bysj-mp-weixin）
+mp-dev:
+> @echo "===== 编译小程序（dev:mp-weixin，产物 dist/dev/mp-weixin）====="
+> @cd $(ROOT)/uniapp && NODE_OPTIONS=--openssl-legacy-provider npm run dev:mp-weixin
+
+# 小程序构建产物（dist/dev/mp-weixin）
+mp-build:
+> @echo "===== 构建小程序（build:mp-weixin）====="
+> @cd $(ROOT)/uniapp && NODE_OPTIONS=--openssl-legacy-provider npm run build:mp-weixin
+
+# 小程序产物同步一次 → Windows（微信开发者工具项目目录）
+mp-sync:
+> @bash $(ROOT)/scripts/sync-mp.sh
+
+# 监听并自动同步小程序产物（配合 mp-dev 使用，Ctrl+C 退出）
+mp-sync-watch:
+> @bash $(ROOT)/scripts/sync-mp.sh --watch
+
+# 同步产物 + 打开微信开发者工具（需先扫码登录工具；未登录会提示 code 10）
+mp-open:
+> @echo "===== 打开微信开发者工具（D:/bysj-mp-weixin）====="
+> @bash $(ROOT)/scripts/sync-mp.sh
+> @powershell.exe -NoProfile -Command "Set-Location 'C:\'; & '$(WX_CLI)' open --project '$(MP_WIN_DIR)'"
 
 # ============================================================
 # 数据库 / 缓存容器状态

@@ -17,6 +17,7 @@ urlpatterns = [
     # 注意：必须放在 admin.site.urls 之前，否则被 Admin 的 catch_all_view 吞掉
     path("admin/api/auth/login", TokenObtainPairView.as_view(), name="admin_api_token_obtain"),
     path("admin/api/auth/refresh", TokenRefreshView.as_view(), name="admin_api_token_refresh"),
-    # 后续业务 App 管理接口（T2+）：path("admin/api/", include("apps.urls")),
+    # 业务管理接口（T2-1/T2-2/T2-3：院系/班级/课程/学期/教学班/排课）
+    path("admin/api/", include("apps.urls")),
     path("admin/", admin.site.urls),
 ]

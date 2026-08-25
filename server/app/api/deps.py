@@ -30,6 +30,11 @@ class UserIdentity:
 def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> UserIdentity:
+    """FastAPI 认证依赖：解析 Bearer JWT → 校验 password_version（4.5 改密使旧 token 失效）。
+
+    任何一步失败（无凭证/解码失败/账号不存在/版本不一致）统一抛 4011。
+    返回当前登录用户身份 `UserIdentity`。
+    """
     if credentials is None or not credentials.credentials:
         raise UnauthorizedError("未登录或缺少凭证")
 

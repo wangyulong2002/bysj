@@ -13,6 +13,7 @@ PNG_DATA = PNG_HEADER + b"\x00" * 100
 
 
 def _upload(client, headers, filename, data, mime, idem_key=None):
+    """封装上传请求：可选携带 Idempotency-Key。"""
     req_headers = dict(headers or {})
     if idem_key:
         req_headers["Idempotency-Key"] = idem_key
@@ -26,12 +27,14 @@ def _upload(client, headers, filename, data, mime, idem_key=None):
 # ---------- 鉴权 ----------
 
 def test_upload_without_token_unauthorized(client):
+    """未登录上传 → 4011。"""
     r = _upload(client, {}, "a.png", PNG_DATA, "image/png")
     assert r.status_code == 200
     assert r.json()["code"] == 4011
 
 
 def test_download_without_token_unauthorized(client, auth_headers):
+    """未登录下载 → 4011。"""
     up = _upload(client, auth_headers, "a.png", PNG_DATA, "image/png")
     file_id = up.json()["data"]["id"]
     r = client.get(f"/api/files/{file_id}")
@@ -42,6 +45,7 @@ def test_download_without_token_unauthorized(client, auth_headers):
 # ---------- 正常上传 / 下载 ----------
 
 def test_upload_and_download_ok(client, auth_headers):
+    """登录用户上传（随机存储名落盘）并下载成功。"""
     up = _upload(client, auth_headers, "photo.png", PNG_DATA, "image/png")
     assert up.status_code == 200
     body = up.json()
@@ -71,6 +75,7 @@ def test_upload_and_download_ok(client, auth_headers):
     ("evil.php", "application/x-php"),
 ])
 def test_upload_disallowed_extension(client, auth_headers, filename, mime):
+    """白名单外扩展名（exe/sh/html/php）→ 4001 拒绝。"""
     r = _upload(client, auth_headers, filename, b"MZ\x90\x00", mime)
     assert r.status_code == 200
     assert r.json()["code"] == 4001
@@ -79,6 +84,7 @@ def test_upload_disallowed_extension(client, auth_headers, filename, mime):
 # ---------- 大小上限 ----------
 
 def test_upload_over_size_limit(client, auth_headers):
+    """超过 10MB 大小上限 → 4001。"""
     big = PNG_HEADER + b"\x00" * (11 * 1024 * 1024)  # >10MB
     r = _upload(client, auth_headers, "big.png", big, "image/png")
     assert r.status_code == 200
@@ -89,6 +95,7 @@ def test_upload_over_size_limit(client, auth_headers):
 # ---------- MIME 与扩展名不匹配 ----------
 
 def test_upload_mime_mismatch(client, auth_headers):
+    """扩展名与 MIME 不匹配 → 4001。"""
     # 扩展名 png 但 Content-Type 是 pdf
     r = _upload(client, auth_headers, "pic.png", PNG_DATA, "application/pdf")
     assert r.status_code == 200
@@ -98,6 +105,7 @@ def test_upload_mime_mismatch(client, auth_headers):
 # ---------- 文件头（magic bytes）校验 ----------
 
 def test_upload_magic_mismatch(client, auth_headers):
+    """文件头（magic bytes）与声明类型不符 → 4001 拒绝伪装文件。"""
     # 声明为 png（扩展名 + MIME 都对），但文件头不是 PNG —— 伪装文件应拒绝
     r = _upload(client, auth_headers, "fake.png", b"#!/bin/sh echo hacked", "image/png")
     assert r.status_code == 200
@@ -112,6 +120,7 @@ def test_upload_magic_mismatch(client, auth_headers):
     "a/../../evil.png",
 ])
 def test_upload_path_traversal_rejected(client, auth_headers, filename):
+    """路径穿越/危险文件名 → 4001 拒绝。"""
     r = _upload(client, auth_headers, filename, PNG_DATA, "image/png")
     assert r.status_code == 200
     assert r.json()["code"] == 4001

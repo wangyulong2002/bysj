@@ -3,6 +3,7 @@ from app.api.health import health
 
 
 def test_health_structure():
+    """健康检查结构：含 status 与四类检查键（app/mysql/redis/rag_index）。"""
     result = health()
     assert result["status"] in ("UP", "DEGRADED", "DOWN")
     checks = result["checks"]
@@ -13,6 +14,7 @@ def test_health_structure():
 
 
 def test_health_endpoint_via_api(client):
+    """通过 HTTP 访问 /health 返回健康状态与检查项。"""
     r = client.get("/health")
     assert r.status_code == 200
     body = r.json()

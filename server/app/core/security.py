@@ -47,7 +47,24 @@ def decode_access_token(token: str) -> dict:
         raise UnauthorizedError("无效的登录凭证") from exc
 
 
-# ===== Django 密码校验（T1-2）=====
+# ===== Django 密码校验/生成（T1-2 / T1-5）=====
+
+def make_django_password(raw_password: str) -> str:
+    """生成 Django 兼容 PBKDF2 密码哈希（`pbkdf2_sha256$iterations$salt$hash`）。
+
+    - 与 `check_django_password` 对称（T1-5 改密 / 重置密码时 FastAPI 侧写入）。
+    - 随机盐 16 字节（32 hex），迭代 10000（与 Django 默认一致）。
+    """
+    import os
+
+    iterations = 10000
+    salt = os.urandom(16).hex()
+    derived = hashlib.pbkdf2_hmac(
+        "sha256", raw_password.encode("utf-8"), salt.encode("utf-8"), iterations
+    )
+    b64 = base64.b64encode(derived).decode("ascii").rstrip("=")
+    return f"pbkdf2_sha256${iterations}${salt}${b64}"
+
 
 def check_django_password(raw_password: str, encoded: str) -> bool:
     """校验 Django PBKDF2 密码哈希（`pbkdf2_sha256$iterations$salt$hash`）。

@@ -20,6 +20,7 @@ IMPORT_CODE = (
 
 
 def run_import(extra_env: dict) -> subprocess.CompletedProcess:
+    """在子进程中以指定环境变量导入 app.core.config，返回执行结果。"""
     env = os.environ.copy()
     env.update(extra_env)  # 环境变量优先级高于 server/.env
     return subprocess.run(
@@ -32,6 +33,7 @@ def run_import(extra_env: dict) -> subprocess.CompletedProcess:
 
 
 def test_missing_required():
+    """缺必填配置时导入应失败并给出明确缺失项报错。"""
     proc = run_import({"MYSQL_PASS": "", "JWT_SECRET": "please-change-me"})
     assert proc.returncode != 0, "缺配置时不应成功启动"
     assert "缺少必要配置项" in proc.stderr, f"报错不够明确: {proc.stderr[-500:]}"
@@ -43,6 +45,7 @@ def test_missing_required():
 
 
 def test_normal_config_ok():
+    """配置完整时导入成功。"""
     proc = run_import({"MYSQL_PASS": "123456", "JWT_SECRET": "real-secret-abc"})
     assert proc.returncode == 0, f"正常配置不应失败: {proc.stderr[-500:]}"
     assert "IMPORT_OK" in proc.stdout

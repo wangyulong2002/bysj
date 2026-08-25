@@ -19,6 +19,7 @@ PNG_DATA = PNG_HEADER + b"\x00" * 100
 
 def _upload(client, headers, filename="a.png", data=PNG_DATA, mime="image/png",
             biz_type=None, visibility=None):
+    """封装上传请求：可指定业务类型与可见性（P1-16）。"""
     params = {}
     if biz_type:
         params["biz_type"] = biz_type
@@ -33,6 +34,7 @@ def _upload(client, headers, filename="a.png", data=PNG_DATA, mime="image/png",
 
 
 def test_upload_writes_acl_metadata(client, auth_headers):
+    """上传写入 ACL 元数据（owner_id/biz_type/visibility，P1-16）。"""
     r = _upload(client, auth_headers, biz_type="leave_attachment", visibility="1")
     assert r.json()["code"] == 0
     d = r.json()["data"]
@@ -42,12 +44,14 @@ def test_upload_writes_acl_metadata(client, auth_headers):
 
 
 def test_avatar_default_visibility_login_visible(client, auth_headers):
+    """头像默认可见性为 3（登录可见，未传 visibility 时）。"""
     r = _upload(client, auth_headers, biz_type="avatar")  # 未传 visibility → 默认 3（登录可见）
     assert r.json()["code"] == 0
     assert r.json()["data"]["visibility"] == "3"
 
 
 def test_private_file_other_user_forbidden(client, auth_headers, test_user_id):
+    """私有文件他人访问被拒绝（4011/4032，B-03 防 IDOR）。"""
     # 上传方：auth_headers（admin）
     up = _upload(client, auth_headers, biz_type="leave_attachment", visibility="1")
     file_id = up.json()["data"]["id"]

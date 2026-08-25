@@ -44,6 +44,7 @@ def idempotency_cache_key(request: Request, key: str) -> str:
 
 
 def _serialize(status_code: int, media_type: str | None, body: bytes) -> str:
+    """序列化响应为幂等缓存存储串（base64 编码 body）。"""
     return json.dumps(
         {
             "status": status_code,
@@ -54,6 +55,7 @@ def _serialize(status_code: int, media_type: str | None, body: bytes) -> str:
 
 
 def _deserialize(raw: str) -> Response | None:
+    """反序列化幂等缓存为 Response；解析失败返回 None（记录告警）。"""
     try:
         data = json.loads(raw)
         body = base64.b64decode(data["body"])
@@ -110,6 +112,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
     """对携带 Idempotency-Key 的写请求做幂等处理（MySQL 唯一表兜底）。"""
 
     async def dispatch(self, request: Request, call_next):
+        """幂等处理入口：Redis 快查 → MySQL 兜底 → 首次执行并落库。"""
         key = request.headers.get(IDEMPOTENCY_HEADER)
         # 仅处理携带幂等键的写方法；读请求 / 无幂等键 / 登录 直接放行（P0-3）
         if request.method not in IDEMPOTENT_METHODS or not key:

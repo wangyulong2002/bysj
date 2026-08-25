@@ -22,16 +22,19 @@ from app.core.permissions import (
 
 
 def _user(role: str, user_id: int = 100) -> UserIdentity:
+    """构造指定角色的测试用户身份。"""
     return UserIdentity(user_id=user_id, role_code=role, password_version=0)
 
 
 def test_role_match_ok():
+    """角色匹配时 require_role 通过。"""
     dep = require_role("student")
     u = dep(_user("student"))
     assert u.role_code == "student"
 
 
 def test_role_mismatch_forbidden():
+    """角色不匹配 → 4031。"""
     dep = require_role("student")
     with pytest.raises(ForbiddenError) as exc:
         dep(_user("teacher"))
@@ -49,6 +52,7 @@ def test_admin_not_allowed_on_app_api():
 
 
 def test_data_scope_injected_per_role():
+    """按角色注入默认数据范围（ROLE_SCOPE_MAP）。"""
     cases = {
         "student": DataScope.USER_SELF,
         "teacher": DataScope.TEACHING_SCOPE,

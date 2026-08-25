@@ -16,6 +16,7 @@ UID = 999999
 
 
 def main():
+    """执行 T0-6/T0-7 验收用例：健康检查/上传/下载/恶意文件/幂等，并清理测试数据。"""
     with engine.begin() as conn:
         conn.execute(
             text(

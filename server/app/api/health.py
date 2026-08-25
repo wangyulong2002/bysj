@@ -17,6 +17,7 @@ WARN_LEVELS = {"DOWN": 2, "UNKNOWN": 1, "NOT_CONFIGURED": 0, "UP": 0}
 
 @router.get("/health")
 def health():
+    """健康检查（9.6/T0-6）：逐项检测 app/MySQL/Redis/RAG，汇总整体状态 UP/DEGRADED/DOWN。"""
     checks = {}
 
     # 应用进程

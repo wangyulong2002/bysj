@@ -34,5 +34,6 @@ class CustomUserAdmin(BaseUserAdmin):
     readonly_fields = ("create_time", "update_time")
 
     def get_queryset(self, request):
+        """仅展示未逻辑删除的用户（del_flag='0'）。"""
         qs = super().get_queryset(request)
         return qs.filter(del_flag="0")

@@ -20,3 +20,6 @@ __pycache__/
 
 # 前端依赖
 node_modules/
+
+# uni-app 编译产物（HBuilderX 运行/发行生成，不入库）
+uniapp/unpackage/

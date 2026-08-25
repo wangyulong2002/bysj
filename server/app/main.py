@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api import auth, files, health  # pyright: ignore[reportImplicitRelativeImport]
+from app.api import auth, files, health, timetable  # pyright: ignore[reportImplicitRelativeImport]
 from app.core.config import settings  # pyright: ignore[reportImplicitRelativeImport]
 from app.core.errors import BizError, ErrorCode  # pyright: ignore[reportImplicitRelativeImport]
 from app.core.idempotency import IdempotencyMiddleware  # pyright: ignore[reportImplicitRelativeImport]
@@ -32,6 +32,7 @@ logger = logging.getLogger("campus")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """应用生命周期：启动/关闭日志（T0-3）。"""
     logger.info("=== %s 启动 (env=%s) ===", settings.APP_NAME, settings.APP_ENV)
     yield
     logger.info("=== %s 关闭 ===", settings.APP_NAME)
@@ -67,11 +68,13 @@ app.add_middleware(IdempotencyMiddleware)
 
 @app.exception_handler(BizError)
 async def biz_error_handler(request: Request, exc: BizError):
+    """业务异常统一处理：转 HTTP 200 + { code, message, data }（6.1）。"""
     return JSONResponse(status_code=200, content=fail(exc.code, exc.message, exc.data))
 
 
 @app.exception_handler(RequestValidationError)
 async def validation_handler(request: Request, exc: RequestValidationError):
+    """请求参数校验失败：提取首个字段错误 → 4001。"""
     first = exc.errors()[0] if exc.errors() else {}
     field = ".".join(str(x) for x in first.get("loc", []))
     msg = f"{field}: {first.get('msg', '参数错误')}" if field else "参数错误"
@@ -80,17 +83,20 @@ async def validation_handler(request: Request, exc: RequestValidationError):
 
 @app.exception_handler(SQLAlchemyError)
 async def sqlalchemy_handler(request: Request, exc: SQLAlchemyError):
+    """SQLAlchemy 异常：记录日志 → 5000（数据库操作失败）。"""
     logger.error("SQLAlchemy error: %s", exc, exc_info=True)
     return JSONResponse(status_code=200, content=fail(ErrorCode.SERVER_ERROR, "数据库操作失败"))
 
 
 @app.exception_handler(StarletteHTTPException)
 async def http_handler(request: Request, exc: StarletteHTTPException):
+    """Starlette HTTP 异常（404/405 等）：统一转 5000 响应。"""
     return JSONResponse(status_code=200, content=fail(ErrorCode.SERVER_ERROR, exc.detail))
 
 
 @app.exception_handler(Exception)
 async def unknown_handler(request: Request, exc: Exception):
+    """兜底异常：记录完整堆栈 → 5000（服务异常）。"""
     logger.error("Unhandled error: %s", exc, exc_info=True)
     return JSONResponse(status_code=200, content=fail(ErrorCode.SERVER_ERROR, "服务异常"))
 
@@ -103,8 +109,12 @@ app.include_router(health.router, prefix=settings.API_PREFIX, tags=["health"])
 app.include_router(auth.router, prefix=settings.API_PREFIX, tags=["auth"])
 # 文件上传/下载（5.3.14 / T0-7）
 app.include_router(files.router, prefix=settings.API_PREFIX, tags=["files"])
+# 课表（4.1 / T2-4/T2-5）+ 班级（T2-6）
+app.include_router(timetable.router, prefix=settings.API_PREFIX, tags=["timetable"])
+app.include_router(timetable.classes_router, prefix=settings.API_PREFIX, tags=["classes"])
 
 
 @app.get("/")
 def root():
+    """根路径：返回服务基本信息与文档入口。"""
     return {"code": 0, "message": "智慧校园信息管理系统 API", "data": {"docs": "/docs"}}

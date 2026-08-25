@@ -11,6 +11,8 @@ SLOW_REQUEST_MS = 1000
 
 
 class RequestLogMiddleware(BaseHTTPMiddleware):
+    """请求日志中间件：记录方法/路径/耗时/状态码，>1s 标记 SLOW（3.6）。"""
+
     async def dispatch(self, request: Request, call_next):
         start = time.perf_counter()
         response = await call_next(request)

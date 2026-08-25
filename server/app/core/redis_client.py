@@ -12,6 +12,7 @@ redis_client = redis.Redis.from_url(
 
 
 def ping_redis() -> bool:
+    """探测 Redis 连通性；不可用返回 False（不抛异常）。"""
     try:
         return bool(redis_client.ping())
     except redis.RedisError:
