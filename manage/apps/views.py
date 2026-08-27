@@ -9,12 +9,15 @@
   冲突校验与写入同事务，固定 MySQL `SELECT ... FOR UPDATE`，
   按 class_id/teacher_id 升序锁行，补死锁重试（OperationalError 1213）。
 """
+from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.db.utils import OperationalError
 from django.utils import timezone
 
 from rest_framework import viewsets
+from rest_framework.decorators import action
+from rest_framework.filters import SearchFilter
 from rest_framework.exceptions import (
     ErrorDetail,
     NotAuthenticated,
@@ -23,23 +26,40 @@ from rest_framework.exceptions import (
     ValidationError,
 )
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from rest_framework.views import exception_handler as drf_exception_handler
 
+from .announcement_flow import on_announcement_deleted, on_announcement_saved
 from .models import (
+    CampusAnnouncement,
     CampusClass,
     CampusCourse,
     CampusCourseOffering,
     CampusCourseSchedule,
     CampusDepartment,
+    CampusLeave,
+    CampusMessage,
+    CampusScore,
+    CampusScoreAudit,
+    CampusStudent,
+    CampusTeacher,
     CampusTerm,
 )
 from .renderers import _extract_message
+
+User = get_user_model()
 from .serializers import (
+    AnnouncementSerializer,
     ClassSerializer,
     CourseSerializer,
     DepartmentSerializer,
+    LeaveSerializer,
     OfferingSerializer,
     ScheduleSerializer,
+    ScoreAuditSerializer,
+    ScoreSerializer,
+    StudentSerializer,
+    TeacherSerializer,
     TermSerializer,
 )
 
@@ -188,6 +208,7 @@ class AdminModelViewSet(viewsets.ModelViewSet):
     """管理端 ViewSet 基类：仅 admin、逻辑删除、自动填充审计字段。"""
 
     permission_classes = [IsAdminRole]
+    filter_backends = [SearchFilter]
 
     def get_queryset(self):
         """返回未逻辑删除的记录集，并保证稳定排序（分页需要）。"""
@@ -222,6 +243,7 @@ class DepartmentViewSet(AdminModelViewSet):
 
     queryset = CampusDepartment.objects.all()
     serializer_class = DepartmentSerializer
+    search_fields = ("dept_name", "dept_code")
 
 
 class ClassViewSet(AdminModelViewSet):
@@ -229,6 +251,7 @@ class ClassViewSet(AdminModelViewSet):
 
     queryset = CampusClass.objects.select_related("department", "counselor").all()
     serializer_class = ClassSerializer
+    search_fields = ("class_name", "class_code")
 
 
 class CourseViewSet(AdminModelViewSet):
@@ -236,6 +259,7 @@ class CourseViewSet(AdminModelViewSet):
 
     queryset = CampusCourse.objects.select_related("department").all()
     serializer_class = CourseSerializer
+    search_fields = ("course_name", "course_code")
 
 
 class TermViewSet(AdminModelViewSet):
@@ -243,6 +267,7 @@ class TermViewSet(AdminModelViewSet):
 
     queryset = CampusTerm.objects.all()
     serializer_class = TermSerializer
+    search_fields = ("term_name",)
 
     def _set_current(self, obj) -> None:
         """置为当前学期时，先清旧学期（事务内保证任意时刻仅一个）。"""
@@ -277,6 +302,7 @@ class OfferingViewSet(AdminModelViewSet):
         "course", "term", "class_field", "teacher"
     ).all()
     serializer_class = OfferingSerializer
+    search_fields = ("course__course_name", "class_field__class_name")
 
 
 # ===== T2-3：排课（冲突校验 + FOR UPDATE）=====
@@ -286,6 +312,7 @@ class ScheduleViewSet(AdminModelViewSet):
 
     queryset = CampusCourseSchedule.objects.select_related("offering").all()
     serializer_class = ScheduleSerializer
+    search_fields = ("offering__course__course_name", "offering__class_field__class_name")
 
     def _save_with_conflict_check(self, serializer) -> CampusCourseSchedule:
         """冲突校验 + FOR UPDATE 锁定 + 写入同一事务；死锁重试（B-04/P1-13）。"""
@@ -345,3 +372,626 @@ class ScheduleViewSet(AdminModelViewSet):
         return Response(
             {"code": 0, "message": "排课更新成功", "data": serializer.data}, status=200
         )
+
+
+# ===== T3-1：公告（状态流转 + RAG 任务联动）=====
+
+class AnnouncementViewSet(AdminModelViewSet):
+    """公告管理（T3-1，/admin/api/announcements，4.2/5.3.9）。
+
+    - 状态机：0 草稿 → 1 发布 → 2 下架（4.2，唯一发布方为管理端）；
+    - 发布记录 publish_time/publisher_id，发布/下架/删除触发 RAG 任务（8.3）
+      与 `ann:version` 缓存失效（P1-11/T3-3）；
+    - 班级公告选目标班级、院系公告选目标院系（单目标，P1-07）。
+    """
+
+    queryset = CampusAnnouncement.objects.select_related(
+        "target_class", "target_department", "publisher"
+    ).all()
+    serializer_class = AnnouncementSerializer
+    search_fields = ("title", "content")
+
+    def perform_create(self, serializer):
+        """创建公告：自动填充审计字段 + 状态流转联动（发布即写 RAG 任务）。"""
+        now = timezone.now()
+        uid = self.request.user.id
+        with transaction.atomic():
+            obj = serializer.save(create_by=uid, create_time=now,
+                                  update_by=uid, update_time=now, del_flag="0",
+                                  publisher_id=uid)
+            on_announcement_saved(obj, old_status="0", operator_id=uid, is_create=True)
+
+    def perform_update(self, serializer):
+        """更新公告：状态流转联动（发布/下架/编辑已发布 → RAG 任务 + 缓存失效）。"""
+        uid = self.request.user.id
+        old_status = serializer.instance.status if serializer.instance else None
+        with transaction.atomic():
+            obj = serializer.save(update_by=uid, update_time=timezone.now())
+            on_announcement_saved(obj, old_status=old_status, operator_id=uid)
+
+    def create(self, request, *args, **kwargs):
+        """创建公告：统一响应格式（6.4：管理端返回 { code, message, data }）。"""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        return Response(
+            {"code": 0, "message": "公告创建成功", "data": serializer.data}, status=200
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        """删除公告：逻辑删除（5.1）后返回统一响应格式（6.4）。"""
+        instance = self.get_object()
+        self.perform_destroy(instance)
+        return Response(
+            {"code": 0, "message": "公告已删除", "data": {"id": instance.pk}}, status=200
+        )
+
+    def perform_destroy(self, instance):
+        """逻辑删除公告（5.1）：已发布公告触发 delete RAG 任务 + 缓存失效。"""
+        with transaction.atomic():
+            self._logical_delete(instance)
+            on_announcement_deleted(instance)
+
+    def _logical_delete(self, instance) -> None:
+        """逻辑删除落库（del_flag='2'，与 perform_destroy 事务内共用）。"""
+        instance.del_flag = "2"
+        instance.update_by = self.request.user.id
+        instance.update_time = timezone.now()
+        instance.save(update_fields=["del_flag", "update_by", "update_time"])
+
+    @staticmethod
+    def _do_publish(instance, operator_id: int) -> None:
+        """执行发布（草稿/下架 → 发布）：状态 + 发布时间 + RAG 任务。"""
+        if instance.status == "1":
+            raise ValidationError({"status": "公告已发布，无需重复发布"})
+        old_status = instance.status
+        instance.status = "1"
+        instance.update_by = operator_id
+        instance.update_time = timezone.now()
+        with transaction.atomic():
+            instance.save(update_fields=["status", "update_by", "update_time"])
+            on_announcement_saved(instance, old_status=old_status, operator_id=operator_id)
+
+    @staticmethod
+    def _do_take_down(instance, operator_id: int) -> None:
+        """执行下架（发布 → 下架）：状态 + RAG delete 任务。"""
+        if instance.status != "1":
+            raise ValidationError({"status": "仅已发布公告可下架"})
+        old_status = instance.status
+        instance.status = "2"
+        instance.update_by = operator_id
+        instance.update_time = timezone.now()
+        with transaction.atomic():
+            instance.save(update_fields=["status", "update_by", "update_time"])
+            on_announcement_saved(instance, old_status=old_status, operator_id=operator_id)
+
+    @action(detail=True, methods=["post"], url_path="publish")
+    def publish(self, request, pk=None):
+        """发布公告（4.2：草稿 → 发布，记录 publish_time）。"""
+        instance = self.get_object()
+        self._do_publish(instance, request.user.id)
+        return Response(
+            {"code": 0, "message": "公告已发布", "data": self.get_serializer(instance).data},
+            status=200,
+        )
+
+    @action(detail=True, methods=["post"], url_path="take-down")
+    def take_down(self, request, pk=None):
+        """下架公告（4.2：发布 → 下架）。"""
+        instance = self.get_object()
+        self._do_take_down(instance, request.user.id)
+        return Response(
+            {"code": 0, "message": "公告已下架", "data": self.get_serializer(instance).data},
+            status=200,
+        )
+
+
+# ===== T2-8/T2-9：学生/教师档案管理（方案 B：档案 ↔ sys_user 账号联动）=====
+
+class StudentViewSet(AdminModelViewSet):
+    """学生档案管理（T2-8，/admin/api/students，5.3.7）。
+
+    方案 B（用户决策 2026-08-26）：创建档案时自动创建 sys_user
+    （username=学号，role_code=student，初始密码默认 123456，姓名写入 nick_name）；
+    更新同步学号/姓名；删除（逻辑）同步停用账号（del_flag=2）。
+    """
+
+    DEFAULT_PASSWORD = "123456"
+
+    queryset = CampusStudent.objects.select_related("user", "class_field").all()
+    serializer_class = StudentSerializer
+    search_fields = ("student_no", "user__nick_name", "class_field__class_name")
+
+    def create(self, request, *args, **kwargs):
+        """创建档案：统一响应格式（6.4：{ code, message, data }）。"""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        return Response(
+            {"code": 0, "message": "创建成功", "data": serializer.data}, status=200
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        """删除档案：统一响应格式（6.4），联动停用账号。"""
+        instance = self.get_object()
+        self.perform_destroy(instance)
+        return Response(
+            {"code": 0, "message": "已删除", "data": {"id": instance.pk}}, status=200
+        )
+
+    def _extract_no(self, data) -> str:
+        """提取唯一编码（学生：学号 student_no）。"""
+        return data["student_no"]
+
+    def perform_create(self, serializer):
+        """创建档案：事务内先建 sys_user 账号，再写档案（方案 B）。"""
+        uid = self.request.user.id
+        now = timezone.now()
+        no = self._extract_no(serializer.validated_data)
+        with transaction.atomic():
+            user = self._create_account(
+                no, serializer.validated_data.get("nick_name"),
+                serializer.validated_data.get("password"), "student", uid, now,
+            )
+            serializer.save(user=user, create_by=uid, create_time=now,
+                            update_by=uid, update_time=now, del_flag="0")
+
+    def perform_update(self, serializer):
+        """更新学生档案：学号/姓名变更同步 sys_user（username/nick_name/student_no）。"""
+        uid = self.request.user.id
+        instance = serializer.instance
+        with transaction.atomic():
+            self._sync_account(instance, serializer.validated_data, uid)
+            serializer.save(update_by=uid, update_time=timezone.now())
+
+    def perform_destroy(self, instance):
+        """逻辑删除档案：同步停用关联账号（del_flag=2 + status=1）。"""
+        with transaction.atomic():
+            self._logical_delete(instance)
+            self._disable_account(instance.user, self.request.user.id)
+
+    def _create_account(self, no, nick_name, password, role, uid, now):
+        """创建关联 sys_user（username=学号/工号；冲突 → 4091 明确提示）。"""
+        name = nick_name or no
+        if User.objects.filter(del_flag="0", username=no).exists():
+            raise ValidationError({"student_no": "该学号对应的登录账号已存在"})
+        return User.objects.create_user(
+            username=no, password=password or self.DEFAULT_PASSWORD, nick_name=name,
+            role_code=role, status="0", del_flag="0", student_no=no,
+            create_by=uid, create_time=now, update_by=uid, update_time=now,
+        )
+
+    def _sync_account(self, instance, data, uid):
+        """同步账号：学号变更 → username/student_no；姓名变更 → nick_name。"""
+        user = instance.user
+        new_no = data.get("student_no")
+        if new_no and new_no != user.username:
+            if User.objects.filter(del_flag="0", username=new_no).exclude(pk=user.pk).exists():
+                raise ValidationError({"student_no": "该学号已被其他账号使用"})
+            user.username = new_no
+            user.student_no = new_no
+        name = data.get("nick_name")
+        if name:
+            user.nick_name = name
+        user.update_by = uid
+        user.update_time = timezone.now()
+        user.save(update_fields=["username", "nick_name", "student_no", "update_by", "update_time"])
+
+    def _disable_account(self, user, uid):
+        """停用关联账号（删除档案联动，5.1 删除走 del_flag）。"""
+        if user is None:
+            return
+        if user.del_flag == "2":
+            return
+        user.del_flag = "2"
+        user.status = "1"
+        user.update_by = uid
+        user.update_time = timezone.now()
+        user.save(update_fields=["del_flag", "status", "update_by", "update_time"])
+
+    def _logical_delete(self, instance) -> None:
+        """逻辑删除落库（del_flag='2'）。"""
+        instance.del_flag = "2"
+        instance.update_by = self.request.user.id
+        instance.update_time = timezone.now()
+        instance.save(update_fields=["del_flag", "update_by", "update_time"])
+
+
+class TeacherViewSet(StudentViewSet):
+    """教师档案管理（T2-9，/admin/api/teachers，5.3.8，方案 B 联动同学生）。
+
+    角色 teacher、工号唯一；职称/院系写入档案，姓名/密码联动 sys_user。
+    **兼任辅导员（ADR-010）**：`is_counselor` + `counselor_class_ids`（1~2 个无辅导员班级）
+    同步 `campus_class.counselor_id`；≤2 班由前后端校验，数据库不加约束。
+    """
+
+    queryset = CampusTeacher.objects.select_related("user", "department").all()
+    serializer_class = TeacherSerializer
+    search_fields = ("teacher_no", "user__nick_name", "department__dept_name")
+
+    def _extract_no(self, data) -> str:
+        """提取唯一编码（教师：工号 teacher_no）。"""
+        return data["teacher_no"]
+
+    def _create_account(self, no, nick_name, password, role, uid, now):
+        """教师账号：username=工号（角色 teacher，teacher_no 冗余）。"""
+        name = nick_name or no
+        if User.objects.filter(del_flag="0", username=no).exists():
+            raise ValidationError({"teacher_no": "该工号对应的登录账号已存在"})
+        return User.objects.create_user(
+            username=no, password=password or self.DEFAULT_PASSWORD, nick_name=name,
+            role_code="teacher", status="0", del_flag="0", teacher_no=no,
+            create_by=uid, create_time=now, update_by=uid, update_time=now,
+        )
+
+    def _sync_account(self, instance, data, uid):
+        """教师账号同步：工号变更 → username/teacher_no；姓名变更 → nick_name。"""
+        user = instance.user
+        new_no = data.get("teacher_no")
+        if new_no and new_no != user.username:
+            if User.objects.filter(del_flag="0", username=new_no).exclude(pk=user.pk).exists():
+                raise ValidationError({"teacher_no": "该工号已被其他账号使用"})
+            user.username = new_no
+            user.teacher_no = new_no
+        name = data.get("nick_name")
+        if name:
+            user.nick_name = name
+        user.update_by = uid
+        user.update_time = timezone.now()
+        user.save(update_fields=["username", "nick_name", "teacher_no", "update_by", "update_time"])
+
+    # ===== 兼任辅导员（ADR-010）=====
+
+    def perform_create(self, serializer):
+        """创建教师：账号联动 + 兼任班级分配（同事务）。"""
+        uid = self.request.user.id
+        now = timezone.now()
+        no = self._extract_no(serializer.validated_data)
+        is_counselor = serializer.validated_data.pop("is_counselor", False)
+        class_ids = serializer.validated_data.pop("counselor_class_ids", [])
+        with transaction.atomic():
+            user = self._create_account(
+                no, serializer.validated_data.get("nick_name"),
+                serializer.validated_data.get("password"), "teacher", uid, now,
+            )
+            serializer.save(user=user, create_by=uid, create_time=now,
+                            update_by=uid, update_time=now, del_flag="0")
+            self._apply_counselor_classes(user.id, is_counselor, class_ids, uid)
+
+    def perform_update(self, serializer):
+        """更新教师：账号同步 + 兼任班级变更（同事务）。"""
+        uid = self.request.user.id
+        instance = serializer.instance
+        is_counselor = serializer.validated_data.pop("is_counselor", None)
+        class_ids = serializer.validated_data.pop("counselor_class_ids", None)
+        with transaction.atomic():
+            self._sync_account(instance, serializer.validated_data, uid)
+            serializer.save(update_by=uid, update_time=timezone.now())
+            if is_counselor is not None:
+                self._apply_counselor_classes(
+                    instance.user_id, is_counselor, class_ids or [], uid
+                )
+
+    def perform_destroy(self, instance):
+        """删除教师：清空兼任班级指定 + 停用账号（逻辑删除）。"""
+        with transaction.atomic():
+            now = timezone.now()
+            CampusClass.objects.filter(counselor_id=instance.user_id, del_flag="0").update(
+                counselor_id=None, update_by=self.request.user.id, update_time=now
+            )
+            self._logical_delete(instance)
+            self._disable_account(instance.user, self.request.user.id)
+
+    def _apply_counselor_classes(self, user_id, is_counselor, class_ids, uid) -> None:
+        """应用兼任班级（ADR-010）：清空旧兼任 → 校验（≤2/无占用/有效）→ 写入新指定。
+
+        事务内调用；`counselor_class_ids` 去重后最多 2 个。
+        """
+        now = timezone.now()
+        # 1) 清空该教师当前兼任的班级（编辑/取消兼任场景）
+        CampusClass.objects.filter(counselor_id=user_id, del_flag="0").update(
+            counselor_id=None, update_by=uid, update_time=now
+        )
+        if not is_counselor:
+            return
+        ids = list(dict.fromkeys(class_ids))  # 去重保序
+        if not ids:
+            raise ValidationError({"counselor_class_ids": "兼任辅导员需选择班级"})
+        if len(ids) > 2:
+            raise ValidationError({"counselor_class_ids": "每名教师最多兼任 2 个班级"})
+        qs = CampusClass.objects.filter(id__in=ids, del_flag="0")
+        if qs.count() != len(ids):
+            raise ValidationError({"counselor_class_ids": "选择的班级无效或已删除"})
+        occupied = qs.exclude(counselor_id__isnull=True).exclude(counselor_id=user_id)
+        if occupied.exists():
+            raise ValidationError(
+                {"counselor_class_ids": f"班级「{occupied.first().class_name}」已有辅导员"}
+            )
+        # 2) 写入新兼任班级
+        qs.update(counselor_id=user_id, update_by=uid, update_time=now)
+
+
+# ===== M4 成绩管理（T4-1）：查询/Excel 导入/发布/撤销发布/审计 =====
+
+class ScoreViewSet(AdminModelViewSet):
+    """成绩管理（T4-1，/admin/api/scores，4.3/5.3.10）。
+
+    - 列表：按教学班/课程/学期查看成绩（只读）；
+    - 发布/撤销发布：记录 publish_by/publish_time 并写审计（operation 3/4）；
+    - Excel 导入：学号/平时/考试成绩（校验学号归属与分数范围，错误行提示）；
+    - 审计查询：/admin/api/score-audits（5.3.11，明细可还原 B-11）。
+    """
+
+    queryset = CampusScore.objects.select_related(
+        "student__user", "offering__course", "offering__term", "offering__class_field"
+    ).all()
+    serializer_class = ScoreSerializer
+
+    def get_queryset(self):
+        """支持 offering_id / course_id / term_id 筛选。"""
+        qs = super().get_queryset()
+        offering_id = self.request.query_params.get("offering_id")
+        course_id = self.request.query_params.get("course_id")
+        term_id = self.request.query_params.get("term_id")
+        if offering_id:
+            qs = qs.filter(offering_id=offering_id)
+        if course_id:
+            qs = qs.filter(offering__course_id=course_id)
+        if term_id:
+            qs = qs.filter(offering__term_id=term_id)
+        return qs
+
+    def _write_audit(self, score, old_detail, new_detail, operation: str) -> None:
+        """写成绩审计（5.3.11 / B-11：old/new 明细快照）。"""
+        now = timezone.now()
+        CampusScoreAudit.objects.create(
+            student_id=score.student_id, offering_id=score.offering_id,
+            old_score=score.total_score, new_score=score.total_score,
+            old_detail=old_detail, new_detail=new_detail,
+            operator_id=self.request.user.id, operation=operation,
+            operation_time=now, create_by=self.request.user.id,
+            create_time=now, update_by=self.request.user.id,
+            update_time=now, del_flag="0",
+        )
+
+    @action(detail=True, methods=["post"], url_path="publish")
+    def publish(self, request, pk=None):
+        """发布成绩（4.3：学生端可见；写审计 operation=3）。"""
+        obj = self.get_object()
+        if obj.is_published == "1":
+            raise ValidationError({"is_published": "成绩已发布，无需重复发布"})
+        detail = {"usual_score": str(obj.usual_score or ""),
+                  "exam_score": str(obj.exam_score or ""),
+                  "usual_ratio": obj.usual_ratio, "exam_ratio": obj.exam_ratio}
+        obj.is_published = "1"
+        obj.publish_by = request.user.id
+        obj.publish_time = timezone.now()
+        obj.update_by = request.user.id
+        obj.update_time = timezone.now()
+        with transaction.atomic():
+            obj.save(update_fields=["is_published", "publish_by", "publish_time",
+                                    "update_by", "update_time"])
+            self._write_audit(obj, detail, detail, "3")
+        return Response({"code": 0, "message": "成绩已发布",
+                         "data": self.get_serializer(obj).data}, status=200)
+
+    @action(detail=True, methods=["post"], url_path="unpublish")
+    def unpublish(self, request, pk=None):
+        """撤销发布（4.3：学生端不可见；写审计 operation=4）。"""
+        obj = self.get_object()
+        if obj.is_published == "0":
+            raise ValidationError({"is_published": "成绩未发布，无需撤销"})
+        detail = {"usual_score": str(obj.usual_score or ""),
+                  "exam_score": str(obj.exam_score or ""),
+                  "usual_ratio": obj.usual_ratio, "exam_ratio": obj.exam_ratio}
+        obj.is_published = "0"
+        obj.update_by = request.user.id
+        obj.update_time = timezone.now()
+        with transaction.atomic():
+            obj.save(update_fields=["is_published", "update_by", "update_time"])
+            self._write_audit(obj, detail, detail, "4")
+        return Response({"code": 0, "message": "成绩已撤销发布",
+                         "data": self.get_serializer(obj).data}, status=200)
+
+    @action(detail=False, methods=["post"], url_path="import")
+    def import_scores(self, request):
+        """Excel 导入成绩（T4-1：模板=学号/平时成绩/考试成绩；校验+错误行提示）。"""
+        offering_id = request.query_params.get("offering_id") or request.data.get("offering_id")
+        file = request.FILES.get("file")
+        if not offering_id:
+            raise ValidationError({"offering_id": "请选择教学班"})
+        if not file:
+            raise ValidationError({"file": "请上传 Excel 文件"})
+        offering = CampusCourseOffering.objects.filter(pk=offering_id, del_flag="0").first()
+        if offering is None:
+            raise ValidationError({"offering_id": "教学班不存在"})
+
+        from openpyxl import load_workbook
+
+        try:
+            wb = load_workbook(file, data_only=True)
+        except Exception as exc:  # noqa: BLE001
+            raise ValidationError({"file": f"Excel 解析失败：{exc}"}) from exc
+        ws = wb.active
+        ratio = _get_score_ratio_tuple()
+
+        errors: list[dict] = []
+        imported = 0
+        now = timezone.now()
+        uid = request.user.id
+        with transaction.atomic():
+            for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+                values = list(row) + [None, None, None]
+                student_no, usual_raw, exam_raw = values[0], values[1], values[2]
+                if student_no is None or str(student_no).strip() == "":
+                    continue  # 空行跳过
+                student_no = str(student_no).strip()
+                try:
+                    usual = float(usual_raw)
+                    exam = float(exam_raw)
+                except (TypeError, ValueError):
+                    errors.append({"row": idx, "message": f"学号 {student_no} 成绩格式错误"})
+                    continue
+                if not (0 <= usual <= 100 and 0 <= exam <= 100):
+                    errors.append({"row": idx, "message": f"学号 {student_no} 成绩超出 0~100"})
+                    continue
+                student = CampusStudent.objects.filter(
+                    student_no=student_no, class_field_id=offering.class_field_id, del_flag="0"
+                ).first()
+                if student is None:
+                    errors.append({"row": idx, "message": f"学号 {student_no} 不属于该教学班班级"})
+                    continue
+                total = round(usual * ratio[0] / 100 + exam * ratio[1] / 100, 2)
+                score, _created = CampusScore.objects.update_or_create(
+                    student=student, offering=offering,
+                    defaults={
+                        "usual_score": usual, "exam_score": exam, "total_score": total,
+                        "usual_ratio": ratio[0], "exam_ratio": ratio[1],
+                        "update_by": uid, "update_time": now, "del_flag": "0",
+                    },
+                )
+                if _created:
+                    score.create_by = uid
+                    score.create_time = now
+                    score.save(update_fields=["create_by", "create_time"])
+                imported += 1
+        return Response({"code": 0, "message": "导入完成",
+                         "data": {"imported": imported, "errors": errors}}, status=200)
+
+
+def _get_score_ratio_tuple() -> tuple[int, int]:
+    """成绩占比字典（campus_score_ratio 首条，格式 '40:60'），缺省 40:60。"""
+    from .models import SysDictData
+
+    row = SysDictData.objects.filter(
+        dict_type="campus_score_ratio", del_flag="0"
+    ).order_by("id").first()
+    if row and ":" in (row.dict_value or ""):
+        u, e = row.dict_value.split(":")
+        return int(u), int(e)
+    return 40, 60
+
+
+class ScoreAuditViewSet(AdminModelViewSet):
+    """成绩审计查询（T4-1，/admin/api/score-audits，5.3.11 只读）。"""
+
+    queryset = CampusScoreAudit.objects.select_related(
+        "student__user", "offering__course"
+    ).all()
+    serializer_class = ScoreAuditSerializer
+    http_method_names = ["get", "head", "options"]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        student_id = self.request.query_params.get("student_id")
+        offering_id = self.request.query_params.get("offering_id")
+        if student_id:
+            qs = qs.filter(student_id=student_id)
+        if offering_id:
+            qs = qs.filter(offering_id=offering_id)
+        return qs.order_by("-operation_time")
+
+
+# ===== M5 请假管理（T5-6）：全部记录 + 管理员干预 =====
+
+class LeaveViewSet(AdminModelViewSet):
+    """请假管理（T5-6，/admin/api/leaves，4.6/5.3.12）。
+
+    - 列表：全部记录（按状态/学号筛选）；
+    - 干预（P1-15）：管理员强制变更状态，必须填 reason；
+      更新状态 + 写站内消息通知学生（记录 old→new/reason/operator/time）。
+    """
+
+    queryset = CampusLeave.objects.select_related("student__user").all()
+    serializer_class = LeaveSerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        status = self.request.query_params.get("status")
+        student_no = self.request.query_params.get("student_no")
+        if status:
+            qs = qs.filter(status=status)
+        if student_no:
+            qs = qs.filter(student__student_no=student_no)
+        return qs.order_by("-create_time")
+
+    @action(detail=True, methods=["post"], url_path="intervene")
+    def intervene(self, request, pk=None):
+        """管理员干预状态（P1-15：非终态变更/终态回退必须填 reason）。
+
+        状态变化即要求 reason；更新状态并写站内消息（含干预说明），
+        禁止直接 SQL/后台编辑 status（只能走干预接口）。
+        """
+        obj = self.get_object()
+        new_status = str(request.data.get("status", ""))
+        reason = str(request.data.get("reason") or "").strip()
+        if new_status not in {"0", "1", "2", "3"}:
+            raise ValidationError({"status": "无效状态（0待审批 1通过 2驳回 3撤销）"})
+        if new_status == obj.status:
+            raise ValidationError({"status": "状态未变化，无需干预"})
+        if not reason:
+            raise ValidationError({"reason": "干预必须填写原因（P1-15）"})
+
+        old_status = obj.status
+        now = timezone.now()
+        uid = request.user.id
+        with transaction.atomic():
+            obj.status = new_status
+            obj.update_by = uid
+            obj.update_time = now
+            if new_status in {"1", "2"}:
+                obj.approver_id = uid
+                obj.approve_time = now
+                obj.approve_comment = f"[管理员干预]{reason}"
+            obj.save(update_fields=["status", "update_by", "update_time",
+                                    "approver_id", "approve_time", "approve_comment"])
+            status_names = {"0": "待审批", "1": "通过", "2": "驳回", "3": "撤销"}
+            CampusMessage.objects.create(
+                user_id=obj.student.user_id, msg_type="2",
+                title="请假状态干预",
+                content=f"您的请假由「{status_names.get(old_status)}」调整为「{status_names.get(new_status)}」：{reason}",
+                business_type="leave", business_id=obj.id,
+                is_read="0", create_time=now, del_flag="0",
+            )
+        return Response({"code": 0, "message": "状态已干预",
+                         "data": self.get_serializer(obj).data}, status=200)
+
+
+class UserOptionsView(APIView):
+    """用户下拉选项（自建管理前端需要：班级选辅导员、教学班选教师）。
+
+    GET /admin/api/users/options?role=counselor|teacher
+    仅返回 del_flag=0 用户，admin 角色可见（P1-10）。
+    """
+
+    permission_classes = [IsAdminRole]
+
+    def get(self, request):
+        """按角色返回用户选项 [{id, name, username}]，role 缺省返回全部。"""
+        role = request.query_params.get("role")
+        qs = User.objects.filter(del_flag="0")
+        if role:
+            qs = qs.filter(role_code=role)
+        data = [
+            {"id": u.id, "name": u.nick_name or u.username, "username": u.username}
+            for u in qs.order_by("id")
+        ]
+        return Response({"code": 0, "message": "ok", "data": data}, status=200)
+
+
+class ClassOptionsView(APIView):
+    """班级下拉选项（ADR-010：教师兼任辅导员选择无辅导员班级）。
+
+    GET /admin/api/classes/options?without_counselor=1
+    without_counselor=1 → 仅返回当前无辅导员（counselor_id IS NULL）的班级。
+    """
+
+    permission_classes = [IsAdminRole]
+
+    def get(self, request):
+        """返回班级选项 [{id, class_name}]，可按"无辅导员"过滤。"""
+        qs = CampusClass.objects.filter(del_flag="0")
+        if request.query_params.get("without_counselor") == "1":
+            qs = qs.filter(counselor_id__isnull=True)
+        data = [{"id": c.id, "class_name": c.class_name} for c in qs.order_by("id")]
+        return Response({"code": 0, "message": "ok", "data": data}, status=200)

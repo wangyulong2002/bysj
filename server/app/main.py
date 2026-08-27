@@ -16,7 +16,16 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api import auth, files, health, timetable  # pyright: ignore[reportImplicitRelativeImport]
+from app.api import (  # pyright: ignore[reportImplicitRelativeImport]
+    announcement,
+    auth,
+    files,
+    health,
+    leave,
+    message,
+    score,
+    timetable,
+)
 from app.core.config import settings  # pyright: ignore[reportImplicitRelativeImport]
 from app.core.errors import BizError, ErrorCode  # pyright: ignore[reportImplicitRelativeImport]
 from app.core.idempotency import IdempotencyMiddleware  # pyright: ignore[reportImplicitRelativeImport]
@@ -112,6 +121,14 @@ app.include_router(files.router, prefix=settings.API_PREFIX, tags=["files"])
 # 课表（4.1 / T2-4/T2-5）+ 班级（T2-6）
 app.include_router(timetable.router, prefix=settings.API_PREFIX, tags=["timetable"])
 app.include_router(timetable.classes_router, prefix=settings.API_PREFIX, tags=["classes"])
+# 公告（4.2 / T3-2/T3-3：列表/详情 + 版本化缓存）
+app.include_router(announcement.router, prefix=settings.API_PREFIX, tags=["announcements"])
+# 成绩（4.3 / T4：学生查询/教师录入 + 乐观锁 + 审计）
+app.include_router(score.router, prefix=settings.API_PREFIX, tags=["scores"])
+# 请假（4.4 / T5：提交/撤销/待审批/审批 + 消息联动）
+app.include_router(leave.router, prefix=settings.API_PREFIX, tags=["leaves"])
+# 站内消息（4.4 / T5-8：列表/未读数/已读）
+app.include_router(message.router, prefix=settings.API_PREFIX, tags=["messages"])
 
 
 @app.get("/")

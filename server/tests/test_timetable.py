@@ -44,7 +44,8 @@ def timetable_data(client: TestClient):
             ), [
                 {"id": _RID, "u": "tt_student", "n": "测试学生", "r": "student"},
                 {"id": _RID + 1, "u": "tt_teacher", "n": "测试教师", "r": "teacher"},
-                {"id": _RID + 2, "u": "tt_counselor", "n": "测试辅导员", "r": "counselor"},
+                # 兼任教师（v2.4 无专职辅导员）：role=teacher + 班级 counselor_id 指向
+                {"id": _RID + 2, "u": "tt_counselor", "n": "兼任教师A", "r": "teacher"},
             ])
             conn.execute(text(
                 "INSERT INTO campus_department (id, dept_name, dept_code, del_flag) "
@@ -220,7 +221,7 @@ def test_teacher_timetable_forbidden_other_class(client: TestClient, timetable_d
 
 
 def test_counselor_timetable_forbidden_other_class(client: TestClient, timetable_data):
-    """辅导员：非所带班级 → 4032（counselor_id 指向其他用户）。"""
+    """兼任教师：非所带/任教班级 → 4032（counselor_id 指向其他用户，ADR-010）。"""
     with engine.begin() as conn:
         conn.execute(text(
             "INSERT INTO campus_class (id, class_name, class_code, grade, major, department_id, counselor_id, del_flag) "
@@ -228,7 +229,7 @@ def test_counselor_timetable_forbidden_other_class(client: TestClient, timetable
         ), {"id": _RID + 11, "did": _RID, "uid": _RID})
     try:
         resp = client.get("/api/timetable", params={"class_id": _RID + 11, "week": 8},
-                          headers=_headers(timetable_data["counselor"], "counselor"))
+                          headers=_headers(timetable_data["counselor"], "teacher"))
         assert resp.json()["code"] == 4032
     finally:
         with engine.begin() as conn:
@@ -236,9 +237,9 @@ def test_counselor_timetable_forbidden_other_class(client: TestClient, timetable
 
 
 def test_counselor_timetable_ok(client: TestClient, timetable_data):
-    """辅导员：所带班级（班1/班2）可查。"""
+    """兼任教师：所带班级（班1/班2，counselor_id=本人）可查（ADR-010）。"""
     resp = client.get("/api/timetable", params={"class_id": timetable_data["class1"], "week": 8},
-                      headers=_headers(timetable_data["counselor"], "counselor"))
+                      headers=_headers(timetable_data["counselor"], "teacher"))
     items = _json(resp)["items"]
     assert len(items) == 2
 
@@ -278,9 +279,9 @@ def test_classes_mine_teacher(client: TestClient, timetable_data):
 
 
 def test_classes_mine_counselor(client: TestClient, timetable_data):
-    """辅导员：所带班级（班1 + 班2）。"""
+    """兼任教师：所带班级（班1 + 班2，counselor_id=本人，ADR-010）。"""
     data = _json(client.get("/api/classes/mine",
-                            headers=_headers(timetable_data["counselor"], "counselor")))
+                            headers=_headers(timetable_data["counselor"], "teacher")))
     ids = {c["class_id"] for c in data}
     assert ids == {timetable_data["class1"], timetable_data["class2"]}
 

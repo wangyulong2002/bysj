@@ -1,0 +1,115 @@
+/* ============================================================
+   管理端全局样式（青岚校园 7.3）
+   - 双边框卡片（Doppelrand）：.card-shell + .card-core
+   - 页面统一背景 / 排版 / Element Plus 细节微调
+   ============================================================ */
+@use './variables.scss' as *;
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'PingFang SC', 'HarmonyOS Sans SC', 'Microsoft YaHei', -apple-system, sans-serif;
+  color: $ink;
+  background: $bg;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- 双边框卡片（7.3.4 Doppelrand）---- */
+.card-shell {
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid $line;
+  border-radius: $radius-card;
+  padding: 6px;
+  box-shadow: $shadow-soft;
+}
+
+.card-core {
+  background: $surface;
+  border-radius: calc(#{$radius-card} - 6px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  padding: 20px;
+}
+
+/* ---- 页面标题区 ---- */
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.page-title {
+  font-size: $fs-20;
+  font-weight: 600;
+  color: $ink;
+}
+
+.page-desc {
+  margin-top: 4px;
+  font-size: $fs-13;
+  color: $ink-2;
+}
+
+/* ---- 工具条（筛选/搜索/操作按钮）---- */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.toolbar .el-input {
+  width: 220px;
+}
+
+/* ---- 表格操作列按钮间距 ---- */
+.el-table .cell .el-button + .el-button {
+  margin-left: 8px;
+}
+
+/* ---- 状态标签配色（公告等）---- */
+.tag-top {
+  color: $warn;
+  background: rgba(254, 243, 199, 0.5);
+  border: 1px solid rgba(217, 119, 6, 0.35);
+}
+
+.tag-status-publish {
+  color: $ok;
+  background: rgba(240, 253, 244, 0.6);
+  border: 1px solid rgba(22, 163, 74, 0.3);
+}
+
+.tag-status-draft {
+  color: $ink-2;
+  background: $bg;
+  border: 1px solid $line;
+}
+
+.tag-status-offline {
+  color: $ink-2;
+  background: $bg;
+  border: 1px solid $line;
+}
+
+/* ---- 滚动条 ---- */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.15);
+  border-radius: 4px;
+}

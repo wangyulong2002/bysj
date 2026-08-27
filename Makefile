@@ -8,13 +8,13 @@
 #   环境自检   make doctor
 #   一键启动   make all             （Django 管理端 + FastAPI）
 #   单服务     make django / make fastapi
-#   H5 前端    make h5              （起 FastAPI + 前端 :8080）
+#   管理前端   make admin-web       （Vue3 自建管理端 :8081，方案 2）
 #   小程序     make mp-dev          （编译）  make mp-sync（同步产物）
 #              make mp-open         （打开微信开发者工具）
 #   停止       make stop
 #   状态日志   make status / make logs
-#   数据库     make db-status / make init-db
-#   常用流程   make doctor → make all → make h5
+#   数据库     make db-status / make init-db / make seed-demo
+#   常用流程   make doctor → make all → make admin-web
 #              make mp-dev + make mp-sync-watch + make mp-open
 # ============================================================
 #
@@ -73,8 +73,9 @@ MP_WIN_DIR := D:\bysj-mp-weixin
 # 声明所有目标名（make 会忽略与文件同名的目录，避免歧义）
 .PHONY: help doctor all django fastapi \
         stop stop-django stop-fastapi \
-        status logs log-django log-fastapi db-status init-db \
-        h5 h5-build mp-dev mp-build mp-sync mp-sync-watch mp-open
+        status logs log-django log-fastapi db-status init-db seed-demo \
+        h5 h5-build mp-dev mp-build mp-sync mp-sync-watch mp-open \
+        admin-web admin-web-build admin-web-stop
 
 # ============================================================
 # 默认目标：直接输入 make 就会显示这份帮助
@@ -91,7 +92,8 @@ help:
 > @echo "    make django           启动 Django 管理端 (端口 8001)"
 > @echo "    make fastapi          启动应用后端   (Python, 端口 8000)"
 > @echo ""
-> @echo "  前端（uni-app，方案 A）："
+> @echo "  前端："
+> @echo "    make admin-web        启动自建管理前端（Vue3 admin-web，:8081，方案 2）"
 > @echo "    make h5               一键启动 H5（FastAPI + dev server，:8080）"
 > @echo "    make mp-dev           编译小程序（dev 模式，配合微信开发者工具）"
 > @echo "    make mp-sync          同步小程序产物 → D:/bysj-mp-weixin"
@@ -114,7 +116,8 @@ help:
 > @echo "  环境 / 数据库："
 > @echo "    make doctor           环境自检（推荐第一步）"
 > @echo "    make db-status        查看 MySQL/Redis 容器运行状态"
-> @echo "    make init-db          数据库初始化（建库建表 + 字典）"
+> @echo "    make init-db          数据库初始化（建库建表 + 字典 + Django migrate）"
+> @echo "    make seed-demo        灌入演示数据（每张表 >=10 条，幂等）"
 > @echo ""
 > @echo "  访问地址："
 > @echo "    Django 管理后台  http://127.0.0.1:8001/admin"
@@ -263,6 +266,26 @@ mp-open:
 > @powershell.exe -NoProfile -Command "Set-Location 'C:\'; & '$(WX_CLI)' open --project '$(MP_WIN_DIR)'"
 
 # ============================================================
+# 自建管理前端（方案 2：Django 接口 + Vue3 admin-web，端口 8081）
+# 依赖：admin-web/（Vue3 + Vite + Element Plus，青岚校园主题）
+# ============================================================
+admin-web:
+> @echo "===== 启动自建管理前端（admin-web，端口 8081）====="
+> @if [ ! -d $(ROOT)/admin-web/node_modules ]; then echo "  首次使用先安装依赖：cd admin-web && npm install"; exit 1; fi
+> @cd $(ROOT)/admin-web && npm run dev
+> @echo "  访问: http://127.0.0.1:8081 （proxy /admin/api → Django 8001）"
+
+# 构建管理前端产物（dist/，可部署到 nginx 反代 /admin/api）
+admin-web-build:
+> @echo "===== 构建管理前端（admin-web）====="
+> @cd $(ROOT)/admin-web && npm run build
+
+# 停止管理前端（按 8081 端口）
+admin-web-stop:
+> @echo "===== 停止管理前端（端口 8081）====="
+> @if fuser -k 8081/tcp 2>/dev/null; then echo "  已停止 admin-web"; else echo "  8081 未监听，无需停止"; fi
+
+# ============================================================
 # 数据库 / 缓存容器状态
 # ============================================================
 db-status:
@@ -279,3 +302,18 @@ db-status:
 init-db:
 > @echo "===== 数据库初始化（T0-4）====="
 > @bash $(ROOT)/scripts/init_db.sh
+
+# ============================================================
+# 演示数据（seed-demo）：每张业务表 >= 10 条，幂等可重复执行
+# 依赖：先 make init-db（表结构）；生成器 scripts/gen_seed_demo.py
+# 演示账号：demo_s01~10（学生）/ demo_t01~10（教师）/ demo_c01~10（辅导员），密码 123456
+# ============================================================
+seed-demo:
+> @echo "===== 灌入演示数据（seed_demo_data.sql，幂等）====="
+> @if [ ! -f $(ROOT)/sql/seed_demo_data.sql ]; then echo "  缺少 sql/seed_demo_data.sql，先执行: python3 scripts/gen_seed_demo.py"; exit 1; fi
+> @if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^campus-mysql$$'; then \
+    docker exec -i campus-mysql mysql -uroot -p123456 --default-character-set=utf8mb4 < $(ROOT)/sql/seed_demo_data.sql; \
+  else \
+    mysql -h127.0.0.1 -P3307 -uroot -p123456 --default-character-set=utf8mb4 < $(ROOT)/sql/seed_demo_data.sql; \
+  fi
+> @echo "  完成。演示账号（密码 123456）：demo_s01~10 / demo_t01~10 / demo_c01~10"

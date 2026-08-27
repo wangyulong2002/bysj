@@ -52,11 +52,10 @@ def test_admin_not_allowed_on_app_api():
 
 
 def test_data_scope_injected_per_role():
-    """按角色注入默认数据范围（ROLE_SCOPE_MAP）。"""
+    """按角色注入默认数据范围（ROLE_SCOPE_MAP，v2.4 无专职辅导员）。"""
     cases = {
         "student": DataScope.USER_SELF,
         "teacher": DataScope.TEACHING_SCOPE,
-        "counselor": DataScope.COUNSELOR_CLASS_SCOPE,
         "admin": DataScope.ALL,
     }
     for role, expect in cases.items():
@@ -65,9 +64,9 @@ def test_data_scope_injected_per_role():
 
 
 def test_data_scope_mismatch_forbidden():
-    """要求 USER_SELF 但角色是 counselor → 4032。"""
+    """要求 USER_SELF 但角色是 teacher → 4032（COUNSELOR 由兼任教师动态获得）。"""
     with pytest.raises(ForbiddenDataError) as exc:
-        require_data_scope(DataScope.USER_SELF)(_user("counselor"))
+        require_data_scope(DataScope.USER_SELF)(_user("teacher"))
     assert exc.value.code == 4032
     # admin（ALL）可访问任意范围
     require_data_scope(DataScope.USER_SELF)(_user("admin"))

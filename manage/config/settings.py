@@ -108,6 +108,9 @@ DATABASES = {
     }
 }
 
+# Redis（T3-3：公告缓存版本失效 ann:version 用，与 FastAPI 统一配置 9.3）
+REDIS_URL = _ENV.get("REDIS_URL", "redis://127.0.0.1:6379/0")
+
 # 用户模型（P1-8）：CustomUser 映射 sys_user，首次迁移前写死
 AUTH_USER_MODEL = "users.CustomUser"
 
@@ -130,6 +133,10 @@ USE_TZ = False
 
 # Static files (CSS, JavaScript, Images)
 STATIC_URL = "static/"
+# 自建管理前端（方案 2，admin-web）构建产物：/admin/ 入口由 AdminWebView 提供，
+# 静态资源（/static/assets/*）由 staticfiles 直接服务（runserver 自动）
+ADMIN_WEB_DIST = PROJECT_ROOT / "admin-web" / "dist"
+STATICFILES_DIRS = [str(ADMIN_WEB_DIST)]
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

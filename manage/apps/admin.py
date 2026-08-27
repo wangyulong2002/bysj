@@ -10,12 +10,19 @@ from django.contrib import admin
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 
+from .announcement_flow import on_announcement_saved
 from .models import (
+    CampusAnnouncement,
     CampusClass,
     CampusCourse,
     CampusCourseOffering,
     CampusCourseSchedule,
     CampusDepartment,
+    CampusLeave,
+    CampusScore,
+    CampusScoreAudit,
+    CampusStudent,
+    CampusTeacher,
     CampusTerm,
     SysDictData,
     SysDictType,
@@ -127,3 +134,128 @@ class CampusCourseScheduleAdmin(admin.ModelAdmin):
             raise DjangoValidationError(str(exc))
         except IntegrityError:
             raise
+
+
+@admin.register(CampusAnnouncement)
+class CampusAnnouncementAdmin(admin.ModelAdmin):
+    """公告管理（T3-1，唯一发布方）：类型/置顶/状态流转（草稿→发布→下架，4.2）。"""
+    list_display = ("id", "title", "ann_type_label", "target_label", "is_top",
+                    "status_label", "publisher", "publish_time", "create_time")
+    list_filter = ("ann_type", "status", "is_top")
+    search_fields = ("title", "content")
+    list_editable = ("is_top",)
+    autocomplete_fields = ("target_class", "target_department", "publisher")
+    date_hierarchy = "publish_time"
+
+    @admin.display(description="类型")
+    def ann_type_label(self, obj) -> str:
+        """公告类型展示（1校园 2院系 3班级）。"""
+        return {"1": "校园", "2": "院系", "3": "班级"}.get(obj.ann_type, obj.ann_type)
+
+    @admin.display(description="状态")
+    def status_label(self, obj) -> str:
+        """状态展示（0草稿 1发布 2下架）。"""
+        return {"0": "草稿", "1": "发布", "2": "下架"}.get(obj.status, obj.status)
+
+    @admin.display(description="目标")
+    def target_label(self, obj) -> str:
+        """单目标展示（班级公告→班级名，院系公告→院系名）。"""
+        if obj.ann_type == "3":
+            return obj.target_class.class_name if obj.target_class else "-"
+        if obj.ann_type == "2":
+            return obj.target_department.dept_name if obj.target_department else "-"
+        return "-"
+
+    def save_model(self, request, obj, form, change):
+        """公告保存：状态流转联动（发布记录时间、写 RAG 任务、缓存失效，8.3/T3-3）。
+
+        与 DRF 接口共用 on_announcement_saved（P0-2：同一状态机唯一实现）。
+        """
+        old_status = None
+        if change:
+            old_status = CampusAnnouncement.objects.filter(pk=obj.pk).values_list(
+                "status", flat=True
+            ).first()
+        uid = request.user.id if request.user.is_authenticated else None
+        with transaction.atomic():
+            obj.update_by = uid
+            if obj.publisher_id is None:
+                obj.publisher_id = uid
+            obj.save()
+            on_announcement_saved(obj, old_status=old_status, operator_id=uid, is_create=not change)
+
+
+@admin.register(CampusScore)
+class CampusScoreAdmin(admin.ModelAdmin):
+    """成绩管理（T4-1）：管理前端为主入口；Admin 只读展示（发布/撤销走 DRF 接口）。"""
+    list_display = ("id", "student", "offering", "usual_score", "exam_score",
+                    "total_score", "is_published", "update_time")
+    list_filter = ("is_published", "offering__term")
+    search_fields = ("student__student_no", "student__user__nick_name",
+                     "offering__course__course_name")
+    autocomplete_fields = ("student", "offering")
+    has_add_permission = lambda self, request: False  # noqa: E731
+    has_delete_permission = lambda self, request, obj=None: False  # noqa: E731
+
+
+@admin.register(CampusScoreAudit)
+class CampusScoreAuditAdmin(admin.ModelAdmin):
+    """成绩审计（T4-1）：只读追溯（B-11 明细快照）。"""
+    list_display = ("id", "student", "offering", "old_score", "new_score",
+                    "operation", "operator_id", "operation_time")
+    list_filter = ("operation",)
+    search_fields = ("student__student_no",)
+    has_add_permission = lambda self, request: False  # noqa: E731
+    has_change_permission = lambda self, request, obj=None: False  # noqa: E731
+    has_delete_permission = lambda self, request, obj=None: False  # noqa: E731
+
+
+@admin.register(CampusLeave)
+class CampusLeaveAdmin(admin.ModelAdmin):
+    """请假管理（T5-6）：管理前端为主入口；状态变更必须走干预接口（P1-15）。"""
+    list_display = ("id", "student", "leave_type", "reason", "start_time", "end_time",
+                    "status", "approve_comment", "create_time")
+    list_filter = ("status", "leave_type")
+    search_fields = ("student__student_no", "student__user__nick_name", "reason")
+    autocomplete_fields = ("student",)
+    has_add_permission = lambda self, request: False  # noqa: E731
+    has_delete_permission = lambda self, request, obj=None: False  # noqa: E731
+
+    def has_change_permission(self, request, obj=None):
+        """禁止直接改 status（P1-15：只能走干预接口），其余字段只读。"""
+        return False
+
+
+@admin.register(CampusStudent)
+class CampusStudentAdmin(admin.ModelAdmin):
+    """学生档案管理（T2-8）：档案与 sys_user 账号联动由 DRF 接口承担（方案 B）。
+
+    管理前端（admin-web）为主入口；Admin 仅提供只读查看，避免双写账号。
+    """
+
+    list_display = ("id", "student_no", "user", "class_field", "enroll_year", "del_flag")
+    list_filter = ("del_flag",)
+    search_fields = ("student_no", "user__nick_name", "class_field__class_name")
+    autocomplete_fields = ("class_field",)
+    readonly_fields = ("user",)
+    has_add_permission = lambda self, request: False  # noqa: E731 — 账号联动由 DRF 接口负责
+
+    def has_delete_permission(self, request, obj=None):
+        """删除走 DRF 接口（需联动停用账号），Admin 不提供。"""
+        return False
+
+
+@admin.register(CampusTeacher)
+class CampusTeacherAdmin(admin.ModelAdmin):
+    """教师档案管理（T2-9）：联动逻辑同学生（方案 B）。"""
+
+    list_display = ("id", "teacher_no", "user", "title", "department", "del_flag")
+    list_filter = ("del_flag",)
+    search_fields = ("teacher_no", "user__nick_name", "department__dept_name")
+    autocomplete_fields = ("department",)
+    readonly_fields = ("user",)
+    has_add_permission = lambda self, request: False  # noqa: E731 — 账号联动由 DRF 接口负责
+
+    def has_delete_permission(self, request, obj=None):
+        """删除走 DRF 接口（需联动停用账号），Admin 不提供。"""
+        return False

@@ -3,6 +3,9 @@
 - `require_role("student")`：功能权限——校验 JWT 角色，不匹配返回 4031。
 - `require_data_scope("CLASS")`：数据权限——按角色注入数据范围过滤器。
 - `DataScope` 枚举：USER_SELF / TEACHING_SCOPE / COUNSELOR_CLASS_SCOPE / ALL。
+  **ADR-010（v2.4 无专职辅导员）**：COUNSELOR_CLASS_SCOPE 不再绑定 counselor 角色，
+  由教师兼任（role_code=teacher 且 `campus_class.counselor_id = 本人`）动态获得，
+  请假审批等接口按 counselor_id 动态判定。
 - `assert_owner`：IDOR 防护——服务端重算归属，不信任前端 ID（2.3/3.5）。
 - admin 边界（P1-10）：应用端 `require_role` 默认拒绝 admin 调用业务接口。
 """
@@ -20,15 +23,14 @@ class DataScope(str, Enum):
 
     USER_SELF = "USER_SELF"              # 本人
     TEACHING_SCOPE = "TEACHING_SCOPE"    # 本人任课教学班覆盖
-    COUNSELOR_CLASS_SCOPE = "COUNSELOR_CLASS_SCOPE"  # 本人所带班级
+    COUNSELOR_CLASS_SCOPE = "COUNSELOR_CLASS_SCOPE"  # 本人所带班级（教师兼任动态获得）
     ALL = "ALL"                          # 全量（仅管理端，P1-10）
 
 
-# 角色 → 默认数据范围（2.3）
+# 角色 → 默认数据范围（2.3；v2.4 去除专职辅导员，counselor 由教师兼任动态叠加）
 ROLE_SCOPE_MAP: dict[str, DataScope] = {
     "student": DataScope.USER_SELF,
     "teacher": DataScope.TEACHING_SCOPE,
-    "counselor": DataScope.COUNSELOR_CLASS_SCOPE,
     "admin": DataScope.ALL,
 }
 
@@ -70,8 +72,7 @@ def assert_owner(user: CurrentUser, owner_user_id: int, resource: str = "资源"
         raise ForbiddenDataError(f"无权访问该{resource}")
 
 
-# 常用依赖快捷方式
+# 常用依赖快捷方式（v2.4：无专职辅导员，辅导员由教师兼任、按 counselor_id 动态判定）
 RequireStudent = Annotated[UserIdentity, Depends(require_role("student"))]
 RequireTeacher = Annotated[UserIdentity, Depends(require_role("teacher"))]
-RequireCounselor = Annotated[UserIdentity, Depends(require_role("counselor"))]
 RequireAdminApi = Annotated[UserIdentity, Depends(require_role("admin"))]

@@ -11,16 +11,25 @@
 import threading
 
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 
 from rest_framework.test import APIClient, APITestCase
 from django.test import TransactionTestCase
 
 from .models import (
+    CampusAnnouncement,
     CampusClass,
     CampusCourse,
     CampusCourseOffering,
     CampusCourseSchedule,
     CampusDepartment,
+    CampusLeave,
+    CampusMessage,
+    CampusRagTask,
+    CampusScore,
+    CampusScoreAudit,
+    CampusStudent,
+    CampusTeacher,
     CampusTerm,
 )
 
@@ -367,3 +376,484 @@ class ScheduleConcurrentTestCase(TransactionTestCase):
 
         self.assertEqual(sorted(results.values()), [0, 4091], f"并发结果应为一方成功一方冲突，实际 {results}")
         self.assertEqual(CampusCourseSchedule.objects.count(), 1)
+
+
+class AnnouncementTestCase(AdminBaseTestCase):
+    """T3-1：公告 CRUD + 状态流转（草稿→发布→下架）+ RAG 任务联动 + 权限。
+
+    覆盖验收要点（验收标准 3）：
+    - 类型（校园/院系/班级）与单目标校验（4.2 P1-07）；
+    - 置顶、状态流转闭环；
+    - 发布记录 publish_time/publisher_id（T3-1 完成事项）；
+    - 发布/下架写 campus_rag_task（8.3 触发点）；
+    - 非 admin 角色访问 → 4031。
+    """
+
+    def setUp(self):
+        """构造公告测试环境：admin 用户 + 院系/班级基础数据。"""
+        super().setUp()
+
+    def _create_draft(self, **overrides):
+        """创建草稿公告（默认校园公告）。"""
+        payload = {
+            "title": "测试公告", "content": "公告内容", "ann_type": "1",
+            "is_top": "0", "status": "0",
+        }
+        payload.update(overrides)
+        return self.client.post("/admin/api/announcements", payload, format="json")
+
+    def _rag_tasks(self, ann_pk, operation):
+        """查询该公告的 RAG 任务（source_type=1 公告）。"""
+        return CampusRagTask.objects.filter(
+            source_type="1", source_id=ann_pk, operation=operation, del_flag="0"
+        )
+
+    def test_announcement_create_draft(self):
+        """创建草稿公告：status=0、无 publish_time。"""
+        resp = self._create_draft()
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["code"], 0)
+        data = resp.json()["data"]
+        self.assertEqual(data["status"], "0")
+        self.assertEqual(data["ann_type"], "1")
+        self.assertIsNone(data["publish_time"])
+
+    def test_announcement_create_class_requires_target(self):
+        """班级公告（ann_type=3）未选目标班级 → 4001。"""
+        resp = self._create_draft(ann_type="3")
+        self.assertEqual(resp.json()["code"], 4001)
+        self.assertIn("班级", resp.json()["message"])
+
+    def test_announcement_create_department_requires_target(self):
+        """院系公告（ann_type=2）未选目标院系 → 4001。"""
+        resp = self._create_draft(ann_type="2")
+        self.assertEqual(resp.json()["code"], 4001)
+        self.assertIn("院系", resp.json()["message"])
+
+    def test_announcement_create_school_ignores_target(self):
+        """校园公告指定目标班级/院系 → 4001。"""
+        resp = self._create_draft(ann_type="1", target_class_id=self.cls.pk)
+        self.assertEqual(resp.json()["code"], 4001)
+
+    def test_publish_sets_time_and_writes_rag_task(self):
+        """发布：status=1、记录 publish_time/publisher、写 RAG upsert 任务（T3-1）。"""
+        resp = self._create_draft()
+        ann_pk = resp.json()["data"]["id"]
+        resp = self.client.post(f"/admin/api/announcements/{ann_pk}/publish")
+        self.assertEqual(resp.json()["code"], 0)
+        data = resp.json()["data"]
+        self.assertEqual(data["status"], "1")
+        self.assertIsNotNone(data["publish_time"])
+        self.assertEqual(data["publisher_id"], self.admin.pk)
+        # RAG upsert 任务（operation=1, source_type=1 公告）
+        self.assertTrue(self._rag_tasks(ann_pk, "1").exists())
+        self.assertEqual(self._rag_tasks(ann_pk, "1").count(), 1)
+
+    def test_take_down_writes_delete_rag_task(self):
+        """下架：status=2、写 RAG delete 任务。"""
+        resp = self._create_draft()
+        ann_pk = resp.json()["data"]["id"]
+        self.client.post(f"/admin/api/announcements/{ann_pk}/publish")
+        resp = self.client.post(f"/admin/api/announcements/{ann_pk}/take-down")
+        self.assertEqual(resp.json()["code"], 0)
+        self.assertEqual(resp.json()["data"]["status"], "2")
+        self.assertTrue(self._rag_tasks(ann_pk, "2").exists())
+
+    def test_status_flow_validation(self):
+        """状态流转校验：未发布不可下架、已发布不可重复发布。"""
+        resp = self._create_draft()
+        ann_pk = resp.json()["data"]["id"]
+        resp = self.client.post(f"/admin/api/announcements/{ann_pk}/take-down")
+        self.assertEqual(resp.json()["code"], 4001)
+        self.client.post(f"/admin/api/announcements/{ann_pk}/publish")
+        resp = self.client.post(f"/admin/api/announcements/{ann_pk}/publish")
+        self.assertEqual(resp.json()["code"], 4001)
+
+    def test_republish_after_take_down(self):
+        """下架后重新发布：再次写 upsert 任务，publish_time 保持首次发布值。"""
+        resp = self._create_draft()
+        ann_pk = resp.json()["data"]["id"]
+        self.client.post(f"/admin/api/announcements/{ann_pk}/publish")
+        first_time = CampusAnnouncement.objects.get(pk=ann_pk).publish_time
+        self.client.post(f"/admin/api/announcements/{ann_pk}/take-down")
+        resp = self.client.post(f"/admin/api/announcements/{ann_pk}/publish")
+        self.assertEqual(resp.json()["code"], 0)
+        ann = CampusAnnouncement.objects.get(pk=ann_pk)
+        self.assertEqual(ann.publish_time, first_time)  # 首次发布时间不回退
+        self.assertEqual(self._rag_tasks(ann_pk, "1").count(), 2)  # 两次发布两次 upsert
+
+    def test_delete_published_writes_rag_task(self):
+        """删除已发布公告：写 delete RAG 任务 + 逻辑删除。"""
+        resp = self._create_draft()
+        ann_pk = resp.json()["data"]["id"]
+        self.client.post(f"/admin/api/announcements/{ann_pk}/publish")
+        resp = self.client.delete(f"/admin/api/announcements/{ann_pk}")
+        self.assertEqual(resp.json()["code"], 0)
+        ann = CampusAnnouncement.objects.get(pk=ann_pk)
+        self.assertEqual(ann.del_flag, "2")  # 逻辑删除
+        self.assertTrue(self._rag_tasks(ann_pk, "2").exists())
+
+    def test_announcement_non_admin_denied(self):
+        """非 admin 角色访问公告管理接口 → 4031。"""
+        self.client.force_authenticate(user=self.counselor)
+        resp = self.client.get("/admin/api/announcements")
+        self.assertEqual(resp.json()["code"], 4031)
+
+
+class StudentTeacherTestCase(AdminBaseTestCase):
+    """T2-8/T2-9：学生/教师档案管理（方案 B：档案 ↔ sys_user 账号联动）。
+
+    覆盖：
+    - 创建档案自动创建 sys_user（角色/登录名/姓名/初始密码）；
+    - 学号/工号唯一冲突 → 4091；账号已存在 → 4001；
+    - 更新同步姓名/登录名；删除（逻辑）联动停用账号；
+    - 非 admin 4031。
+    """
+
+    def _create_student(self, **overrides):
+        """创建学生档案（默认：学号 S20260001/姓名 测试学生/班级 self.cls）。"""
+        payload = {
+            "student_no": "S20260001", "nick_name": "测试学生",
+            "class_id": self.cls.pk, "enroll_year": "2026", "password": "",
+        }
+        payload.update(overrides)
+        return self.client.post("/admin/api/students", payload, format="json")
+
+    def test_student_create_creates_account(self):
+        """创建学生档案 → 自动创建 sys_user（role=student，username=学号，姓名同步）。"""
+        resp = self._create_student()
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["code"], 0)
+        data = resp.json()["data"]
+        self.assertEqual(data["student_no"], "S20260001")
+        self.assertEqual(data["username"], "S20260001")
+        self.assertEqual(data["class_name"], self.cls.class_name)
+        user = User.objects.get(username="S20260001")
+        self.assertEqual(user.role_code, "student")
+        self.assertEqual(user.nick_name, "测试学生")
+        self.assertEqual(user.status, "0")
+        self.assertEqual(user.student_no, "S20260001")
+        # 档案 user_id 指向该账号
+        self.assertEqual(CampusStudent.objects.get(pk=data["id"]).user_id, user.pk)
+
+    def test_student_duplicate_no_conflict(self):
+        """学号重复 → 4091（数据库唯一兜底）。"""
+        self._create_student()
+        resp = self._create_student(student_no="S20260001")
+        self.assertEqual(resp.json()["code"], 4091)
+
+    def test_student_account_exists_rejected(self):
+        """登录账号已存在（学号被占用）→ 4001 明确提示。"""
+        # 预置同名登录账号（不经过接口），再通过接口创建 → 校验拒绝
+        User.objects.create_user(username="S20260001", password="x",
+                                 role_code="student", del_flag="0",
+                                 nick_name="已存在")
+        resp = self._create_student(student_no="S20260001")
+        self.assertEqual(resp.json()["code"], 4001)
+        self.assertIn("已存在", resp.json()["message"])
+
+    def test_student_update_syncs_account(self):
+        """更新档案：姓名/学号变更同步 sys_user。"""
+        resp = self._create_student()
+        sid = resp.json()["data"]["id"]
+        resp = self.client.put(f"/admin/api/students/{sid}",
+                               {"student_no": "S20260001", "nick_name": "新名字",
+                                "class_id": self.cls.pk, "enroll_year": "2026"},
+                               format="json")
+        self.assertEqual(resp.json()["code"], 0)
+        user = User.objects.get(username="S20260001")
+        self.assertEqual(user.nick_name, "新名字")
+        # 学号变更 → 登录名同步
+        resp = self.client.put(f"/admin/api/students/{sid}",
+                               {"student_no": "S20260002", "nick_name": "新名字",
+                                "class_id": self.cls.pk, "enroll_year": "2026"},
+                               format="json")
+        self.assertEqual(resp.json()["code"], 0)
+        self.assertTrue(User.objects.filter(username="S20260002").exists())
+        self.assertFalse(User.objects.filter(username="S20260001").exists())
+
+    def test_student_delete_disables_account(self):
+        """删除学生档案（逻辑）→ 关联账号停用（del_flag=2 + status=1）。"""
+        resp = self._create_student()
+        sid = resp.json()["data"]["id"]
+        resp = self.client.delete(f"/admin/api/students/{sid}")
+        self.assertEqual(resp.json()["code"], 0)
+        user = User.objects.get(username="S20260001")
+        self.assertEqual(user.del_flag, "2")
+        self.assertEqual(user.status, "1")
+
+    def test_teacher_create_creates_account(self):
+        """创建教师档案 → 自动创建 sys_user（role=teacher，username=工号）。"""
+        payload = {"teacher_no": "T20260001", "nick_name": "测试教师",
+                   "title": "副教授", "department_id": self.dept.pk, "password": ""}
+        resp = self.client.post("/admin/api/teachers", payload, format="json")
+        self.assertEqual(resp.json()["code"], 0)
+        user = User.objects.get(username="T20260001")
+        self.assertEqual(user.role_code, "teacher")
+        self.assertEqual(user.nick_name, "测试教师")
+        self.assertEqual(user.teacher_no, "T20260001")
+
+    def test_student_teacher_non_admin_denied(self):
+        """非 admin 访问学生/教师管理 → 4031。"""
+        self.client.force_authenticate(user=self.counselor)
+        self.assertEqual(self.client.get("/admin/api/students").json()["code"], 4031)
+        self.assertEqual(self.client.get("/admin/api/teachers").json()["code"], 4031)
+
+
+class TeacherCounselorTestCase(AdminBaseTestCase):
+    """T2-9 兼任辅导员（ADR-010）：教师可被指定为班级辅导员（≤2 班，前后端校验）。
+
+    覆盖：
+    - 创建教师兼任 1~2 班 → 班级 counselor_id 写入；
+    - 兼任 >2 班 → 4001；兼任已有辅导员的班级 → 4001；
+    - 更新：改兼任班级（旧清空新写入）/ 取消兼任（全部清空）；
+    - 删除教师 → 兼任班级 counselor_id 清空；
+    - 无辅导员班级选项接口（without_counselor=1）。
+    """
+
+    def setUp(self):
+        """复用基类数据 + 新建一个无辅导员班级（self.cls 已指定辅导员李导员）。"""
+        super().setUp()
+        self.cls_free = CampusClass.objects.create(
+            class_name="软工2301", class_code="CS2301B", grade="2023",
+            major="软件工程", department=self.dept, del_flag="0",
+        )
+
+    def _create_teacher(self, teacher_no="T9-001", is_counselor=False, class_ids=None):
+        """创建教师（可带兼任参数）。"""
+        payload = {"teacher_no": teacher_no, "nick_name": "兼任测试",
+                   "title": "讲师", "department_id": self.dept.pk, "password": ""}
+        if is_counselor is not False:
+            payload["is_counselor"] = is_counselor
+        if class_ids is not None:
+            payload["counselor_class_ids"] = class_ids
+        return self.client.post("/admin/api/teachers", payload, format="json")
+
+    def test_teacher_create_with_counselor(self):
+        """创建教师兼任 1 个班级 → campus_class.counselor_id 写入该教师。"""
+        resp = self._create_teacher(is_counselor=True, class_ids=[self.cls_free.pk])
+        self.assertEqual(resp.json()["code"], 0)
+        cls = CampusClass.objects.get(pk=self.cls_free.pk)
+        user = User.objects.get(username="T9-001")
+        self.assertEqual(cls.counselor_id, user.pk)
+        data = resp.json()["data"]
+        self.assertEqual(data["counselor_class_id_list"], [self.cls_free.pk])
+        self.assertEqual(data["counselor_class_names"], [self.cls_free.class_name])
+
+    def test_teacher_counselor_max_two(self):
+        """兼任超过 2 个班级 → 4001（前后端限制，ADR-010）。"""
+        cls2 = CampusClass.objects.create(class_name="测试班2", class_code="T92",
+                                          grade="2024", major="测试", del_flag="0")
+        cls3 = CampusClass.objects.create(class_name="测试班3", class_code="T93",
+                                          grade="2024", major="测试", del_flag="0")
+        resp = self._create_teacher(is_counselor=True,
+                                    class_ids=[self.cls_free.pk, cls2.pk, cls3.pk])
+        self.assertEqual(resp.json()["code"], 4001)
+        self.assertIn("最多兼任 2 个", resp.json()["message"])
+
+    def test_teacher_counselor_occupied_class(self):
+        """兼任已有辅导员的班级 → 4001（占用校验）。"""
+        # 先建一个辅导员并指定给 self.cls
+        counselor = User.objects.create_user(username="T9-own", password="x",
+                                             role_code="counselor", del_flag="0")
+        CampusClass.objects.filter(pk=self.cls.pk).update(counselor_id=counselor.pk)
+        resp = self._create_teacher(is_counselor=True, class_ids=[self.cls.pk])
+        self.assertEqual(resp.json()["code"], 4001)
+        self.assertIn("已有辅导员", resp.json()["message"])
+
+    def test_teacher_update_switch_counselor_classes(self):
+        """更新：改兼任班级 → 旧班级清空、新班级写入。"""
+        cls2 = CampusClass.objects.create(class_name="测试班B", class_code="T9B",
+                                          grade="2024", major="测试", del_flag="0")
+        resp = self._create_teacher(is_counselor=True, class_ids=[self.cls_free.pk])
+        tid = resp.json()["data"]["id"]
+        user = User.objects.get(username="T9-001")
+        resp = self.client.put(f"/admin/api/teachers/{tid}",
+                               {"teacher_no": "T9-001", "nick_name": "兼任测试",
+                                "title": "讲师", "department_id": self.dept.pk,
+                                "is_counselor": True, "counselor_class_ids": [cls2.pk]},
+                               format="json")
+        self.assertEqual(resp.json()["code"], 0)
+        self.assertEqual(CampusClass.objects.get(pk=self.cls_free.pk).counselor_id, None)
+        self.assertEqual(CampusClass.objects.get(pk=cls2.pk).counselor_id, user.pk)
+
+    def test_teacher_update_cancel_counselor(self):
+        """更新：取消兼任（is_counselor=False）→ 兼任班级全部清空。"""
+        resp = self._create_teacher(is_counselor=True, class_ids=[self.cls_free.pk])
+        tid = resp.json()["data"]["id"]
+        resp = self.client.put(f"/admin/api/teachers/{tid}",
+                               {"teacher_no": "T9-001", "nick_name": "兼任测试",
+                                "title": "讲师", "department_id": self.dept.pk,
+                                "is_counselor": False, "counselor_class_ids": []},
+                               format="json")
+        self.assertEqual(resp.json()["code"], 0)
+        self.assertEqual(CampusClass.objects.get(pk=self.cls_free.pk).counselor_id, None)
+
+    def test_teacher_delete_clears_counselor(self):
+        """删除教师 → 兼任班级 counselor_id 清空 + 账号停用。"""
+        self._create_teacher(is_counselor=True, class_ids=[self.cls_free.pk])
+        tid = CampusTeacher.objects.get(user__username="T9-001").pk
+        resp = self.client.delete(f"/admin/api/teachers/{tid}")
+        self.assertEqual(resp.json()["code"], 0)
+        self.assertEqual(CampusClass.objects.get(pk=self.cls_free.pk).counselor_id, None)
+        self.assertEqual(User.objects.get(username="T9-001").del_flag, "2")
+
+    def test_class_options_without_counselor(self):
+        """无辅导员班级选项接口：仅返回 counselor_id IS NULL 的班级。"""
+        # self.cls 已指定辅导员（李导员）→ 不在列表；cls_free 无辅导员 → 在列表
+        counselor = User.objects.create_user(username="T9-own2", password="x",
+                                             role_code="counselor", del_flag="0")
+        cls_occ = CampusClass.objects.create(class_name="已占用班", class_code="T9O",
+                                             grade="2024", major="测试",
+                                             counselor_id=counselor.pk, del_flag="0")
+        resp = self.client.get("/admin/api/classes/options?without_counselor=1")
+        self.assertEqual(resp.json()["code"], 0)
+        ids = [c["id"] for c in resp.json()["data"]]
+        self.assertIn(self.cls_free.pk, ids)
+        self.assertNotIn(self.cls.pk, ids)
+        self.assertNotIn(cls_occ.pk, ids)
+
+
+class ScoreAdminTestCase(AdminBaseTestCase):
+    """T4-1：成绩管理（发布/撤销发布/审计 + Excel 导入）。"""
+
+    def setUp(self):
+        """构造：学生（self.cls 班）+ 教学班 + 成绩记录。"""
+        super().setUp()
+        self.course = CampusCourse.objects.create(
+            course_name="测试课程M4", course_code="M4K", credit=3.0,
+            hours=48, department=self.dept, del_flag="0",
+        )
+        self.t_user = User.objects.create_user(username="M4T001", password="x",
+                                               role_code="teacher", del_flag="0")
+        self.teacher = CampusTeacher.objects.create(
+            user=self.t_user, teacher_no="M4T001", title="讲师",
+            department=self.dept, del_flag="0",
+        )
+        s_user = User.objects.create_user(username="M4S001", password="x",
+                                          role_code="student", del_flag="0")
+        self.student = CampusStudent.objects.create(
+            user=s_user, student_no="M4S001", class_field=self.cls,
+            enroll_year="2023", del_flag="0",
+        )
+        self.term2 = CampusTerm.objects.create(
+            term_name="2025-2026学年第二学期", start_date="2026-02-01",
+            end_date="2026-07-01", total_weeks=20, is_current="0", del_flag="0",
+        )
+        self.offering2 = CampusCourseOffering.objects.create(
+            course=self.course, term=self.term2, class_field=self.cls,
+            teacher=self.t_user, del_flag="0",
+        )
+        self.score = CampusScore.objects.create(
+            student=self.student, offering=self.offering2,
+            usual_score="80.00", exam_score="70.00", total_score="74.00",
+            usual_ratio=40, exam_ratio=60, is_published="0", version=0,
+            del_flag="0",
+        )
+
+    def test_score_list_and_publish(self):
+        """成绩列表可见 + 发布 → is_published=1 + 审计(operation=3)。"""
+        resp = self.client.get(f"/admin/api/scores?offering_id={self.offering2.pk}")
+        self.assertEqual(resp.json()["code"], 0)
+        resp = self.client.post(f"/admin/api/scores/{self.score.pk}/publish")
+        self.assertEqual(resp.json()["code"], 0)
+        self.score.refresh_from_db()
+        self.assertEqual(self.score.is_published, "1")
+        self.assertIsNotNone(self.score.publish_by)
+        self.assertTrue(CampusScoreAudit.objects.filter(
+            student=self.student, offering=self.offering2, operation="3"
+        ).exists())
+
+    def test_score_unpublish_writes_audit(self):
+        """撤销发布 → is_published=0 + 审计(operation=4)。"""
+        self.client.post(f"/admin/api/scores/{self.score.pk}/publish")
+        resp = self.client.post(f"/admin/api/scores/{self.score.pk}/unpublish")
+        self.assertEqual(resp.json()["code"], 0)
+        self.score.refresh_from_db()
+        self.assertEqual(self.score.is_published, "0")
+        self.assertTrue(CampusScoreAudit.objects.filter(
+            student=self.student, offering=self.offering2, operation="4"
+        ).exists())
+
+    def test_score_audit_list(self):
+        """审计查询接口可查。"""
+        self.client.post(f"/admin/api/scores/{self.score.pk}/publish")
+        resp = self.client.get("/admin/api/score-audits",
+                               {"student_id": self.student.pk})
+        self.assertEqual(resp.json()["code"], 0)
+        self.assertGreaterEqual(len(resp.json()["data"]["results"]), 1)
+
+    def test_score_import_excel(self):
+        """Excel 导入：正确学号导入成功，错误学号给出错误行提示。"""
+        from io import BytesIO
+
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["学号", "平时成绩", "考试成绩"])
+        ws.append([self.student.student_no, 88, 92])
+        ws.append(["NOT_EXIST", 80, 70])  # 错误学号
+        ws.append([self.student.student_no, 150, 70])  # 超范围
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        resp = self.client.post(
+            f"/admin/api/scores/import?offering_id={self.offering2.pk}",
+            {"file": buf}, format="multipart",
+        )
+        self.assertEqual(resp.json()["code"], 0)
+        data = resp.json()["data"]
+        self.assertEqual(data["imported"], 1)
+        self.assertEqual(len(data["errors"]), 2)
+
+
+class LeaveAdminTestCase(AdminBaseTestCase):
+    """T5-6：请假管理（列表 + 管理员干预 P1-15）。"""
+
+    def setUp(self):
+        """构造：学生 + 请假记录。"""
+        super().setUp()
+        self.stu_user = User.objects.create_user(username="M5S001", password="x",
+                                                 role_code="student", del_flag="0")
+        self.student = CampusStudent.objects.create(
+            user=self.stu_user, student_no="M5S001", class_field=self.cls,
+            enroll_year="2023", del_flag="0",
+        )
+        self.leave = CampusLeave.objects.create(
+            student=self.student, leave_type="1", reason="测试请假",
+            start_time=timezone.now(), end_time=timezone.now() + timezone.timedelta(hours=4),
+            leave_duration_minutes=240, total_days="0.2", status="0", version=0,
+            create_time=timezone.now(), del_flag="0",
+        )
+
+    def test_leave_list_and_intervene(self):
+        """请假列表 + 干预（0→1，reason 必填，消息生成）。"""
+        resp = self.client.get("/admin/api/leaves")
+        self.assertEqual(resp.json()["code"], 0)
+        # 缺 reason → 4001
+        resp = self.client.post(f"/admin/api/leaves/{self.leave.pk}/intervene",
+                                {"status": "1"}, format="json")
+        self.assertEqual(resp.json()["code"], 4001)
+        # 干预 0→1
+        resp = self.client.post(f"/admin/api/leaves/{self.leave.pk}/intervene",
+                                {"status": "1", "reason": "核实情况属实"}, format="json")
+        self.assertEqual(resp.json()["code"], 0)
+        self.leave.refresh_from_db()
+        self.assertEqual(self.leave.status, "1")
+        self.assertTrue(CampusMessage.objects.filter(
+            user_id=self.stu_user.pk, business_type="leave",
+            business_id=self.leave.pk, msg_type="2",
+        ).exists())
+        # 终态回退（1→0）也需 reason
+        resp = self.client.post(f"/admin/api/leaves/{self.leave.pk}/intervene",
+                                {"status": "0"}, format="json")
+        self.assertEqual(resp.json()["code"], 4001)
+        resp = self.client.post(f"/admin/api/leaves/{self.leave.pk}/intervene",
+                                {"status": "0", "reason": "系统误操作回退"}, format="json")
+        self.assertEqual(resp.json()["code"], 0)
+
+    def test_leave_non_admin_denied(self):
+        """非 admin 访问请假管理 → 4031。"""
+        self.client.force_authenticate(user=self.counselor)
+        self.assertEqual(self.client.get("/admin/api/leaves").json()["code"], 4031)

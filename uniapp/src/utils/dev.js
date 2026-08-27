@@ -21,7 +21,7 @@ const DEPLOY_BASE = process.env.VUE_APP_API_BASE || ''
 const API_BASE_URL = DEPLOY_BASE || 'http://127.0.0.1:8000'
 // #endif
 // #ifndef H5
-const DEV_IP = '127.0.0.1' // ← 真机预览时改成局域网 IP，多端复用
+const DEV_IP = '127.0.0.1' // ← 真机预览时改成局域网 IP，多端复用（开发机 WSL IP）
 const API_BASE_URL = DEPLOY_BASE || `http://${DEV_IP}:8000`
 // #endif
 

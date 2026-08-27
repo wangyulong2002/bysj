@@ -70,26 +70,17 @@ def _resolve_class_id(user: CurrentUser, class_id: int | None) -> tuple[int, str
         if role == "teacher":
             if class_id is None:
                 raise ParamError("教师查询课表必须指定 class_id")
+            # 任教班级 ∪ 所带班级（兼任辅导员，ADR-010/v2.4）
             ok = conn.execute(
                 text("SELECT 1 FROM campus_course_offering "
-                     "WHERE teacher_id = :uid AND class_id = :cid AND del_flag = '0' LIMIT 1"),
+                     "WHERE teacher_id = :uid AND class_id = :cid AND del_flag = '0' "
+                     "UNION SELECT 1 FROM campus_class "
+                     "WHERE id = :cid AND counselor_id = :uid AND del_flag = '0' LIMIT 1"),
                 {"uid": user.user_id, "cid": class_id},
             ).first()
             if ok is None:
-                raise ForbiddenDataError("无权查看该班级课表（仅限本人任课班级）")
+                raise ForbiddenDataError("无权查看该班级课表（仅限本人任课或所带班级）")
             return int(class_id), "teacher"
-
-        if role == "counselor":
-            if class_id is None:
-                raise ParamError("辅导员查询课表必须指定 class_id")
-            ok = conn.execute(
-                text("SELECT 1 FROM campus_class "
-                     "WHERE id = :cid AND counselor_id = :uid AND del_flag = '0' LIMIT 1"),
-                {"cid": class_id, "uid": user.user_id},
-            ).first()
-            if ok is None:
-                raise ForbiddenDataError("无权查看该班级课表（仅限本人所带班级）")
-            return int(class_id), "counselor"
 
         # admin：全量（T2-5），入参 class_id 生效
         if class_id is None:
@@ -218,15 +209,12 @@ def _my_classes(user: CurrentUser) -> list[dict]:
                 {"uid": user.user_id},
             ).fetchall()
         elif role == "teacher":
+            # 任教班级 ∪ 所带班级（兼任辅导员，ADR-010/v2.4）
             rows = conn.execute(
                 text(_CLASS_JOIN + "WHERE cl.id IN (SELECT DISTINCT class_id FROM campus_course_offering "
-                     "WHERE teacher_id = :uid AND del_flag = '0') AND cl.del_flag = '0' "
-                     "ORDER BY cl.id"),
-                {"uid": user.user_id},
-            ).fetchall()
-        elif role == "counselor":
-            rows = conn.execute(
-                text(_CLASS_JOIN + "WHERE cl.counselor_id = :uid AND cl.del_flag = '0' "
+                     "WHERE teacher_id = :uid AND del_flag = '0' "
+                     "UNION SELECT id FROM campus_class "
+                     "WHERE counselor_id = :uid AND del_flag = '0') AND cl.del_flag = '0' "
                      "ORDER BY cl.id"),
                 {"uid": user.user_id},
             ).fetchall()

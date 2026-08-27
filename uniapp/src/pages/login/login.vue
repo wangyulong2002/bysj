@@ -16,6 +16,7 @@
           <text class="field-label">账号</text>
           <input
             class="field-input"
+            style="display:block;width:100%;height:96rpx;"
             v-model="username"
             placeholder="学号 / 工号"
             placeholder-class="field-placeholder"
@@ -26,6 +27,7 @@
           <text class="field-label">密码</text>
           <input
             class="field-input"
+            style="display:block;width:100%;height:96rpx;"
             v-model="password"
             password
             placeholder="请输入密码"
@@ -68,8 +70,8 @@
     <view v-if="binding" class="bind-panel">
       <view class="bind-title">绑定微信账号</view>
       <view class="bind-desc">该微信尚未绑定账号，输入学号/工号和密码完成首次绑定</view>
-      <input class="field-input bind-input" v-model="bindUsername" placeholder="学号 / 工号" placeholder-class="field-placeholder" />
-      <input class="field-input bind-input" v-model="bindPassword" password placeholder="密码" placeholder-class="field-placeholder" />
+      <input class="field-input bind-input" style="display:block;width:100%;height:96rpx;" v-model="bindUsername" placeholder="学号 / 工号" placeholder-class="field-placeholder" />
+      <input class="field-input bind-input" style="display:block;width:100%;height:96rpx;" v-model="bindPassword" password placeholder="密码" placeholder-class="field-placeholder" />
       <view class="bind-actions">
         <button class="btn btn-ghost" @tap="binding = false">取消</button>
         <button class="btn btn-primary" :disabled="bindLoading" @tap="onBindSubmit">

@@ -21,6 +21,73 @@
         "navigationBarBackgroundColor": "#F8FAFC",
         "navigationBarTextStyle": "black"
       }
+    },
+    {
+      "path": "pages/announcement/list",
+      "style": {
+        "navigationBarTitleText": "公告",
+        "navigationBarBackgroundColor": "#F8FAFC",
+        "navigationBarTextStyle": "black",
+        "enablePullDownRefresh": false
+      }
+    },
+    {
+      "path": "pages/announcement/detail",
+      "style": {
+        "navigationBarTitleText": "公告详情",
+        "navigationBarBackgroundColor": "#F8FAFC",
+        "navigationBarTextStyle": "black"
+      }
+    },
+    {
+      "path": "pages/score/score",
+      "style": {
+        "navigationBarTitleText": "我的成绩",
+        "navigationBarBackgroundColor": "#F8FAFC",
+        "navigationBarTextStyle": "black"
+      }
+    },
+    {
+      "path": "pages/score/input",
+      "style": {
+        "navigationBarTitleText": "成绩录入",
+        "navigationBarBackgroundColor": "#F8FAFC",
+        "navigationBarTextStyle": "black"
+      }
+    },
+    {
+      "path": "pages/leave/apply",
+      "style": {
+        "navigationBarTitleText": "请假申请",
+        "navigationBarBackgroundColor": "#F8FAFC",
+        "navigationBarTextStyle": "black"
+      }
+    },
+    {
+      "path": "pages/leave/list",
+      "style": {
+        "navigationBarTitleText": "我的请假",
+        "navigationBarBackgroundColor": "#F8FAFC",
+        "navigationBarTextStyle": "black"
+      }
+    },
+    {
+      "path": "pages/leave/approve",
+      "style": {
+        "navigationBarTitleText": "请假审批",
+        "navigationBarBackgroundColor": "#F8FAFC",
+        "navigationBarTextStyle": "black",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/message/list",
+      "style": {
+        "navigationBarTitleText": "消息中心",
+        "navigationBarBackgroundColor": "#F8FAFC",
+        "navigationBarTextStyle": "black",
+        "enablePullDownRefresh": true
+      }
     }
   ],
   "globalStyle": {

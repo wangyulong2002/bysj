@@ -1,0 +1,46 @@
+/* ============================================================
+   青岚校园（Teal Campus）设计令牌（设计报告 7.3）
+   管理端前端与 uni-app 应用端共用同一套色板/圆角/阴影/字体
+   ============================================================ */
+
+/* ---- 色彩（7.3.1 Teal 主色）---- */
+$brand: #0E7490;        // 主强调色：主按钮 / 选中 / 链接
+$brand-deep: #155E75;   // hover / 按压态 / 渐变收尾
+$brand-soft: #E0F2FE;   // 选中背景 / 标签底色 / 消息未读点
+$bg: #F8FAFC;           // 页面底色（近白）
+$surface: #FFFFFF;      // 卡片 / 面板
+$ink: #0F172A;          // 主文字（禁用纯黑）
+$ink-2: #475569;        // 次级文字
+$line: #E2E8F0;         // 分割线 / 描边（浅描边）
+$ok: #16A34A;
+$warn: #D97706;
+$err: #DC2626;
+
+/* ---- 圆角 / 阴影（7.3.4 Doppelrand 双边框）---- */
+$radius-card: 16px;     // 大卡片 rounded-2xl
+$radius-ctrl: 12px;     // 控件 rounded-xl
+$radius-pill: 999px;    // 胶囊按钮
+$shadow-soft: 0 8px 24px rgba(15, 23, 42, 0.06);
+$ease-premium: cubic-bezier(0.32, 0.72, 0, 1);
+
+/* ---- 字号阶梯 ---- */
+$fs-12: 12px;
+$fs-13: 13px;
+$fs-14: 14px;
+$fs-16: 16px;
+$fs-20: 20px;
+$fs-24: 24px;
+$fs-28: 28px;
+
+/* ---- Element Plus 主题覆盖（主色 = teal）---- */
+:root {
+  --el-color-primary: #0E7490;
+  --el-color-primary-light-3: #3f92a9;
+  --el-color-primary-light-5: #70b0c2;
+  --el-color-primary-light-7: #a0cfdb;
+  --el-color-primary-light-8: #b8dee7;
+  --el-color-primary-light-9: #e0f2fe;
+  --el-color-primary-dark-2: #155E75;
+  --el-border-radius-base: 10px;
+  --el-border-radius-small: 8px;
+}

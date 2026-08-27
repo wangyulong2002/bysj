@@ -21,7 +21,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 import app.api.auth as auth_mod
+from app.core.redis_client import redis_client
 from app.services import wechat as wechat_mod
+
+
+def _clear_code_cache(code: str) -> None:
+    """清理指定 code 的 code2session 缓存（单元测试隔离）。"""
+    redis_client.delete(f"wechat:code2session:{code}")
 
 # 测试用户（独立于 conftest 的 999999，用后清理）
 WX_USER_A_ID = 999901
@@ -87,6 +93,7 @@ def fake_code2session(monkeypatch):
 
 def test_code2session_missing_config(monkeypatch):
     """未配置 AppID/Secret → 5000。"""
+    _clear_code_cache("wx-code")
     monkeypatch.setattr(wechat_mod.settings, "WECHAT_APPID", "")
     monkeypatch.setattr(wechat_mod.settings, "WECHAT_SECRET", "")
     from app.core.errors import BizError
@@ -98,6 +105,7 @@ def test_code2session_missing_config(monkeypatch):
 
 def test_code2session_http_error(monkeypatch):
     """微信接口网络/HTTP 错误 → 5000。"""
+    _clear_code_cache("wx-code")
     monkeypatch.setattr(wechat_mod.settings, "WECHAT_APPID", "wx-a")
     monkeypatch.setattr(wechat_mod.settings, "WECHAT_SECRET", "s")
 
@@ -115,6 +123,7 @@ def test_code2session_http_error(monkeypatch):
 
 def test_code2session_errcode(monkeypatch):
     """微信返回业务错误码（如 40029）→ 4001。"""
+    _clear_code_cache("invalid-code")
     monkeypatch.setattr(wechat_mod.settings, "WECHAT_APPID", "wx-a")
     monkeypatch.setattr(wechat_mod.settings, "WECHAT_SECRET", "s")
 
@@ -135,6 +144,7 @@ def test_code2session_errcode(monkeypatch):
 
 def test_code2session_ok(monkeypatch):
     """正常返回 openid（mock 微信响应）。"""
+    _clear_code_cache("wx-abc")
     monkeypatch.setattr(wechat_mod.settings, "WECHAT_APPID", "wx-a")
     monkeypatch.setattr(wechat_mod.settings, "WECHAT_SECRET", "s")
 
@@ -148,6 +158,63 @@ def test_code2session_ok(monkeypatch):
     monkeypatch.setattr(wechat_mod.httpx, "get", lambda *a, **k: _Resp())
     data = wechat_mod.code2session("wx-abc")
     assert data["openid"] == "mock-openid-abc"
+
+
+# ===================== code 缓存（绑定复用 code 二次调用 40163 修复）=====================
+
+def test_code2session_cache_second_call(monkeypatch):
+    """同一 code 二次调用命中缓存，不再请求微信（避免 40163 code been used）。
+
+    模拟绑定流程：先登录（code2session 一次）→ 绑定（复用 code，应命中缓存）。
+    """
+    _clear_code_cache("wx-cache")
+    monkeypatch.setattr(wechat_mod.settings, "WECHAT_APPID", "wx-a")
+    monkeypatch.setattr(wechat_mod.settings, "WECHAT_SECRET", "s")
+    calls = {"n": 0}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"openid": "mock-openid-cache", "session_key": "k", "unionid": ""}
+
+    def _mock_get(*args, **kwargs):
+        calls["n"] += 1
+        return _Resp()
+
+    monkeypatch.setattr(wechat_mod.httpx, "get", _mock_get)
+    assert wechat_mod.code2session("wx-cache")["openid"] == "mock-openid-cache"
+    # 第二次调用：命中缓存，不请求微信
+    assert wechat_mod.code2session("wx-cache")["openid"] == "mock-openid-cache"
+    assert calls["n"] == 1, "二次调用应命中缓存（微信 code 一次性）"
+    _clear_code_cache("wx-cache")
+
+
+def test_code2session_cache_redis_down(monkeypatch):
+    """Redis 故障降级：直连微信，功能可用（9.7 降级矩阵）。"""
+    _clear_code_cache("wx-fallback")
+    monkeypatch.setattr(wechat_mod.settings, "WECHAT_APPID", "wx-a")
+    monkeypatch.setattr(wechat_mod.settings, "WECHAT_SECRET", "s")
+
+    import redis as redis_lib
+
+    def _boom(*args, **kwargs):
+        raise redis_lib.RedisError("connection refused")
+
+    monkeypatch.setattr(wechat_mod.redis_client, "get", _boom)
+    monkeypatch.setattr(wechat_mod.redis_client, "set", _boom)
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"openid": "mock-openid-fb", "session_key": "k", "unionid": ""}
+
+    monkeypatch.setattr(wechat_mod.httpx, "get", lambda *a, **k: _Resp())
+    data = wechat_mod.code2session("wx-fallback")
+    assert data["openid"] == "mock-openid-fb"
 
 
 # ===================== 集成测试（需 MySQL/Redis）=====================

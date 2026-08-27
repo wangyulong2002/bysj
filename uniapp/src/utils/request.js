@@ -24,6 +24,21 @@ function handleUnauthorized() {
 }
 
 /**
+ * 清理 GET 查询参数：剔除 undefined/null/空串。
+ * uni.request 会把值为 undefined 的属性序列化成字符串 "undefined"（如
+ * `ann_type=undefined`），导致后端参数校验失败（422）或过滤错误（T3-2 修复）。
+ */
+function cleanQuery(data = {}) {
+  const out = {}
+  Object.keys(data).forEach((key) => {
+    const v = data[key]
+    if (v === undefined || v === null || v === '') return
+    out[key] = v
+  })
+  return out
+}
+
+/**
  * 发起请求
  * @param {string} method  GET/POST/DELETE/PUT
  * @param {string} path    API 路径（如 /api/auth/wechat/login）
@@ -40,7 +55,7 @@ export function request(method, path, data = {}, options = {}) {
     uni.request({
       url: `${API_BASE_URL}${path}`,
       method,
-      data,
+      data: method === 'GET' ? cleanQuery(data) : data,
       header: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {})
