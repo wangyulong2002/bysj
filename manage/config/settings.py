@@ -5,7 +5,7 @@ Django settings for config project.
 设计基线：《智慧校园信息管理系统 设计报告》v2.2
 - DDL 权威：Django migrations（P0-1/B-05），sql/ 仅导出产物
 - 时区：Asia/Shanghai、USE_TZ=False（B-10）
-- 认证：Admin 用 Session+CSRF；/admin/api/** 用 JWT（P1-9）
+- 认证：管理端统一自建前端（admin-web）+ /admin/api/** JWT（P1-9）；内置 Django Admin 已移除
 - 用户：CustomUser(AbstractBaseUser, PermissionsMixin)，db_table='sys_user'（P1-8）
 """
 import os
@@ -46,7 +46,6 @@ ALLOWED_HOSTS = _ENV.get("DJANGO_ALLOWED_HOSTS", "*").split(",")
 # Application definition
 
 INSTALLED_APPS = [
-    "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",

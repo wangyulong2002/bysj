@@ -45,6 +45,10 @@
     <!-- 账号操作（T1-4 解绑演示） -->
     <view class="card-shell">
       <view class="card-core">
+        <view class="op-row" @tap="goProfile">
+          <text class="op-label">个人信息</text>
+          <text class="op-arrow">›</text>
+        </view>
         <view class="op-row" @tap="onUnbind">
           <text class="op-label">微信解绑</text>
           <text class="op-arrow">›</text>
@@ -126,6 +130,10 @@ export default {
     goMessageList() {
       // 消息中心
       uni.navigateTo({ url: '/pages/message/list' })
+    },
+    goProfile() {
+      // 个人信息（M6-T6-2）
+      uni.navigateTo({ url: '/pages/profile/profile' })
     },
     async onUnbind() {
       // 微信解绑：二次确认后调用解绑接口，失败给出提示

@@ -88,6 +88,22 @@
         "navigationBarTextStyle": "black",
         "enablePullDownRefresh": true
       }
+    },
+    {
+      "path": "pages/profile/profile",
+      "style": {
+        "navigationBarTitleText": "个人信息",
+        "navigationBarBackgroundColor": "#F8FAFC",
+        "navigationBarTextStyle": "black"
+      }
+    },
+    {
+      "path": "pages/profile/update-password",
+      "style": {
+        "navigationBarTitleText": "修改密码",
+        "navigationBarBackgroundColor": "#F8FAFC",
+        "navigationBarTextStyle": "black"
+      }
     }
   ],
   "globalStyle": {

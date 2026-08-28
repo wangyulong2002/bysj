@@ -1,28 +1,16 @@
 /**
- * API 地址解析（开发 / 部署多端复用）
+ * API 地址解析 —— 一次配置，全端通用
  *
- * ── 部署上线（推荐，改一处全端生效）──
- *   在项目根目录 .env.production 中配置：
- *     VUE_APP_API_BASE=http://服务器IP或域名:8000
- *   然后重新构建：
- *     npm run build:h5         → 产物部署到 nginx
- *     npm run build:mp-weixin  → 微信开发者工具上传发布
- *   无需修改任何源码。
+ * 唯一地址源：项目根 `.env` 的 `PUBLIC_BASE_URL`（如 http://192.168.0.100:8000）
+ *   - 后端签名 URL（头像等直链）由 server/config.py 读取同一变量
+ *   - 前端构建由 Makefile 自动注入（make h5-build / make mp-build）
+ *   - 部署/真机：只改根 .env 一处 → 重新构建 → H5 / 小程序 / 签名 URL 全部生效
  *
- * ── 本地开发（无环境变量时的默认值）──
- *   H5（浏览器）：固定 127.0.0.1
- *   小程序 / 真机：DEV_IP（修改下方一处，多端复用）
- *     模拟器调试保持 127.0.0.1（WSL2 localhost 转发默认开启）；
- *     真机预览改为局域网 IP（如 192.168.x.x）。
+ * 本文件规则：
+ *   1) 构建时（make h5-build / make mp-build）VUE_APP_API_BASE 由 Makefile 注入；
+ *   2) 未注入时回退默认 http://127.0.0.1:8000（本地模拟器/H5 开发，同机同端口）。
+ *   无需再手动改本文件（真机/部署改根 .env 即可）。
  */
-const DEPLOY_BASE = process.env.VUE_APP_API_BASE || ''
-
-// #ifdef H5
-const API_BASE_URL = DEPLOY_BASE || 'http://127.0.0.1:8000'
-// #endif
-// #ifndef H5
-const DEV_IP = '127.0.0.1' // ← 真机预览时改成局域网 IP，多端复用（开发机 WSL IP）
-const API_BASE_URL = DEPLOY_BASE || `http://${DEV_IP}:8000`
-// #endif
+const API_BASE_URL = process.env.VUE_APP_API_BASE || 'http://127.0.0.1:8000'
 
 export { API_BASE_URL }

@@ -23,6 +23,7 @@ from app.api import (  # pyright: ignore[reportImplicitRelativeImport]
     health,
     leave,
     message,
+    profile,
     score,
     timetable,
 )
@@ -129,6 +130,8 @@ app.include_router(score.router, prefix=settings.API_PREFIX, tags=["scores"])
 app.include_router(leave.router, prefix=settings.API_PREFIX, tags=["leaves"])
 # 站内消息（4.4 / T5-8：列表/未读数/已读）
 app.include_router(message.router, prefix=settings.API_PREFIX, tags=["messages"])
+# 个人信息（4.5 / M6-T6-1：GET/PUT /api/profile + phone.full）
+app.include_router(profile.router, prefix=settings.API_PREFIX, tags=["profile"])
 
 
 @app.get("/")

@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     APP_ENV: str = "dev"
     DEBUG: bool = True
     API_PREFIX: str = "/api"
+    # 对外公共基础地址（签名 URL 直链用，如 http://127.0.0.1:8000；部署改为服务器地址）
+    PUBLIC_BASE_URL: str = ""
 
     # MySQL
     MYSQL_HOST: str = "127.0.0.1"

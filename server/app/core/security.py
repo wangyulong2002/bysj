@@ -107,12 +107,17 @@ def build_signed_file_url(file_id: int) -> str:
     """生成短期签名下载 URL（供小程序 <image> 渲染，B-02）。
 
     指向直链下载接口 `/api/files/{id}/url-download`（免 JWT，image 组件可用）。
+    配置 `PUBLIC_BASE_URL`（如 http://127.0.0.1:8000）时返回**完整 URL**，
+    避免小程序 image 按页面地址（含开发者工具 `__pageframe__` 前缀）补全导致 500；
+    未配置时退化为相对路径（H5 同源场景可用）。
     """
     import time as _time
 
     expire_ts = int(_time.time()) + SIGNED_URL_TTL_SECONDS
     sig = create_signed_url_token(file_id, expire_ts)
-    return f"/api/files/{file_id}/url-download?token={sig}&expires={expire_ts}"
+    path = f"/api/files/{file_id}/url-download?token={sig}&expires={expire_ts}"
+    base = settings.PUBLIC_BASE_URL.rstrip("/")
+    return f"{base}{path}" if base else path
 
 
 def verify_signed_url_token(file_id: int, token: str, expire_ts: int) -> bool:

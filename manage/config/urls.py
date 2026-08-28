@@ -2,20 +2,15 @@
 
 - /admin/          自建管理前端入口（SPA：admin-web 构建产物，AdminWebView）
 - /admin/api/**    DRF 管理接口（simplejwt JWT，P1-9）
-- /django-admin/   Django 内置 Admin（保留作后备，不再占 /admin 路径）
+（Django 内置 Admin 已删除，管理端统一使用自建 admin-web）
 """
 from pathlib import Path
 
 from django.conf import settings
-from django.contrib import admin
 from django.http import HttpResponse
 from django.urls import include, path
 from django.views import View
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-
-admin.site.site_header = "智慧校园 管理后台"
-admin.site.site_title = "智慧校园 管理后台"
-admin.site.index_title = "后台管理"
 
 
 class AdminWebView(View):
@@ -47,6 +42,4 @@ urlpatterns = [
     # 自建管理前端 SPA（方案 2）：/admin/ 与子路径均返回 index.html
     path("admin/", AdminWebView.as_view(), name="admin_web"),
     path("admin/<path:path>", AdminWebView.as_view(), name="admin_web_spa"),
-    # Django 内置 Admin 保留在 /django-admin/（不占 /admin）
-    path("django-admin/", admin.site.urls),
 ]
