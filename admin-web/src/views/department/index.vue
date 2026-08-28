@@ -47,7 +47,7 @@
           <el-input v-model="form.dept_name" placeholder="如：计算机学院" />
         </el-form-item>
         <el-form-item label="院系编码" prop="dept_code">
-          <el-input v-model="form.dept_code" placeholder="如：CS" />
+          <el-input v-model="form.dept_code" placeholder="留空自动生成" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -74,8 +74,7 @@ const dialogVisible = ref(false)
 const formRef = ref()
 const form = reactive({ id: null, dept_name: '', dept_code: '' })
 const rules = {
-  dept_name: [{ required: true, message: '请输入院系名称', trigger: 'blur' }],
-  dept_code: [{ required: true, message: '请输入院系编码', trigger: 'blur' }]
+  dept_name: [{ required: true, message: '请输入院系名称', trigger: 'blur' }]
 }
 
 async function load() {

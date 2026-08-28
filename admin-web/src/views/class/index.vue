@@ -50,7 +50,7 @@
           <el-input v-model="form.class_name" placeholder="如：计科2301" />
         </el-form-item>
         <el-form-item label="班级编码" prop="class_code">
-          <el-input v-model="form.class_code" placeholder="如：CS2301" />
+          <el-input v-model="form.class_code" placeholder="留空自动生成" />
         </el-form-item>
         <el-form-item label="年级" prop="grade">
           <el-input v-model="form.grade" placeholder="如：2023" />
@@ -100,7 +100,6 @@ const form = reactive({
 })
 const rules = {
   class_name: [{ required: true, message: '请输入班级名称', trigger: 'blur' }],
-  class_code: [{ required: true, message: '请输入班级编码', trigger: 'blur' }],
   grade: [{ required: true, message: '请输入年级', trigger: 'blur' }]
 }
 

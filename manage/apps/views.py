@@ -728,13 +728,16 @@ class ScoreViewSet(AdminModelViewSet):
     serializer_class = ScoreSerializer
 
     def get_queryset(self):
-        """支持 offering_id / course_id / term_id 筛选。"""
+        """支持 offering_id / class_id / course_id / term_id 筛选。"""
         qs = super().get_queryset()
         offering_id = self.request.query_params.get("offering_id")
+        class_id = self.request.query_params.get("class_id")
         course_id = self.request.query_params.get("course_id")
         term_id = self.request.query_params.get("term_id")
         if offering_id:
             qs = qs.filter(offering_id=offering_id)
+        if class_id:
+            qs = qs.filter(offering__class_field_id=class_id)
         if course_id:
             qs = qs.filter(offering__course_id=course_id)
         if term_id:
@@ -793,18 +796,152 @@ class ScoreViewSet(AdminModelViewSet):
         return Response({"code": 0, "message": "成绩已撤销发布",
                          "data": self.get_serializer(obj).data}, status=200)
 
+    @action(detail=False, methods=["post"], url_path="batch-publish")
+    def batch_publish(self, request):
+        """批量发布成绩（T4-1：ids 列表，事务内逐条发布并写审计 operation=3）。"""
+        ids = request.data.get("ids") or []
+        if not ids:
+            raise ValidationError({"ids": "请选择要发布的成绩"})
+        published = skipped = 0
+        now = timezone.now()
+        uid = request.user.id
+        with transaction.atomic():
+            for obj in CampusScore.objects.filter(pk__in=ids, del_flag="0"):
+                if obj.is_published == "1":
+                    skipped += 1
+                    continue
+                detail = {"usual_score": str(obj.usual_score or ""),
+                          "exam_score": str(obj.exam_score or ""),
+                          "usual_ratio": obj.usual_ratio, "exam_ratio": obj.exam_ratio}
+                obj.is_published = "1"
+                obj.publish_by = uid
+                obj.publish_time = now
+                obj.update_by = uid
+                obj.update_time = now
+                obj.save(update_fields=["is_published", "publish_by", "publish_time",
+                                        "update_by", "update_time"])
+                self._write_audit(obj, detail, detail, "3")
+                published += 1
+        return Response({"code": 0, "message": "批量发布完成",
+                         "data": {"published": published, "skipped": skipped}}, status=200)
+
+    @action(detail=False, methods=["post"], url_path="batch-unpublish")
+    def batch_unpublish(self, request):
+        """批量撤销发布成绩（T4-1：ids 列表，事务内逐条撤销并写审计 operation=4）。"""
+        ids = request.data.get("ids") or []
+        if not ids:
+            raise ValidationError({"ids": "请选择要撤销发布的成绩"})
+        unpublished = skipped = 0
+        now = timezone.now()
+        uid = request.user.id
+        with transaction.atomic():
+            for obj in CampusScore.objects.filter(pk__in=ids, del_flag="0"):
+                if obj.is_published == "0":
+                    skipped += 1
+                    continue
+                detail = {"usual_score": str(obj.usual_score or ""),
+                          "exam_score": str(obj.exam_score or ""),
+                          "usual_ratio": obj.usual_ratio, "exam_ratio": obj.exam_ratio}
+                obj.is_published = "0"
+                obj.update_by = uid
+                obj.update_time = now
+                obj.save(update_fields=["is_published", "update_by", "update_time"])
+                self._write_audit(obj, detail, detail, "4")
+                unpublished += 1
+        return Response({"code": 0, "message": "批量撤销完成",
+                         "data": {"unpublished": unpublished, "skipped": skipped}}, status=200)
+
+    @action(detail=False, methods=["get"], url_path="import-template")
+    def import_template(self, request):
+        """下载成绩导入模板（T4-1：列=班级|学科|学号|平时成绩|考试成绩）。
+
+        前端弹框选定 班级+课程 后调用：定位该教学班（当前学期），自动填入班级全部学生学号，
+        表头/边框/列宽与 `docs/成绩导入测试模板.xlsx` 样式一致，平时/考试成绩留空待填。
+        """
+        from django.http import HttpResponse
+
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+        class_id = request.query_params.get("class_id")
+        course_id = request.query_params.get("course_id")
+        cls = CampusClass.objects.filter(pk=class_id, del_flag="0").first() if class_id else None
+        course = CampusCourse.objects.filter(pk=course_id, del_flag="0").first() if course_id else None
+        if cls is None or course is None:
+            raise ValidationError({"class_id/course_id": "请选择班级和课程"})
+
+        current_term = CampusTerm.objects.filter(is_current="1", del_flag="0").first()
+        offering = None
+        if current_term:
+            offering = CampusCourseOffering.objects.filter(
+                class_field_id=cls.id, course_id=course.id,
+                term_id=current_term.id, del_flag="0",
+            ).first()
+        students = list(CampusStudent.objects.filter(
+            class_field_id=cls.id, del_flag="0",
+        ).order_by("student_no"))
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "成绩导入"
+        headers = ["班级", "学科", "学号", "平时成绩", "考试成绩"]
+        ws.append(headers + ["说明（导入时忽略）"])
+
+        thin = Side(style="thin", color="B0B0B0")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        head_fill = PatternFill("solid", fgColor="D9EAF7")
+        for c in ws[1]:
+            c.font = Font(bold=True, color="1F4E79")
+            c.fill = head_fill
+            c.alignment = Alignment(horizontal="center", vertical="center")
+            c.border = border
+        ws.column_dimensions["F"].width = 42
+        ws["F1"].font = Font(bold=True, color="1F4E79")
+
+        for i, stu in enumerate(students, start=2):
+            ws.append([cls.class_name, course.course_name, stu.student_no, "", ""])
+            ws.cell(row=i, column=6, value="").font = Font(color="808080", italic=True, size=9)
+
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, max_col=5):
+            for c in row:
+                c.border = border
+                c.alignment = Alignment(horizontal="center")
+        for col, w in (("A", 14), ("B", 16), ("C", 14), ("D", 12), ("E", 12)):
+            ws.column_dimensions[col].width = w
+
+        resp = HttpResponse(
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        resp["Content-Disposition"] = (
+            f'attachment; filename="score_import_{cls.class_name}_{course.course_name}.xlsx"'
+        )
+        wb.save(resp)
+        return resp
+
     @action(detail=False, methods=["post"], url_path="import")
     def import_scores(self, request):
-        """Excel 导入成绩（T4-1：模板=学号/平时成绩/考试成绩；校验+错误行提示）。"""
-        offering_id = request.query_params.get("offering_id") or request.data.get("offering_id")
+        """Excel 导入成绩（T4-1：模板=班级|学科|学号|平时成绩|考试成绩）。
+
+        - 按（班级, 学科）定位**当前学期**教学班 offering（一份文件可覆盖多班级多学科，
+          辅导员兼任多班/每班多学科无需分次上传）；
+        - 兼容旧模板：行内班级/学科为空时用前端选择器 class_id/course_id 兜底；
+          两者皆缺省时用 offering_id（旧调用方式）；
+        - 校验：成绩 0~100、学号属于该班级、（班级,学科）存在当前学期教学班；错误行返回行号+原因。
+        """
         file = request.FILES.get("file")
-        if not offering_id:
-            raise ValidationError({"offering_id": "请选择教学班"})
         if not file:
             raise ValidationError({"file": "请上传 Excel 文件"})
-        offering = CampusCourseOffering.objects.filter(pk=offering_id, del_flag="0").first()
-        if offering is None:
-            raise ValidationError({"offering_id": "教学班不存在"})
+        offering_id = request.query_params.get("offering_id") or request.data.get("offering_id")
+        class_id = request.query_params.get("class_id") or request.data.get("class_id")
+        course_id = request.query_params.get("course_id") or request.data.get("course_id")
+
+        fallback_offering = None
+        if offering_id:
+            fallback_offering = CampusCourseOffering.objects.filter(
+                pk=offering_id, del_flag="0"
+            ).select_related("class_field", "course").first()
+            if fallback_offering is None:
+                raise ValidationError({"offering_id": "教学班不存在"})
 
         from openpyxl import load_workbook
 
@@ -815,17 +952,91 @@ class ScoreViewSet(AdminModelViewSet):
         ws = wb.active
         ratio = _get_score_ratio_tuple()
 
+        # 按表头自适应列位：新模板「班级|学科|学号|平时成绩|考试成绩」；旧模板「学号|平时成绩|考试成绩」
+        header = ["" if v is None else str(v).strip()
+                  for v in next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())]
+
+        def find_col(*names):
+            for n in names:
+                for i, h in enumerate(header):
+                    if n in h:
+                        return i
+            return None
+
+        if find_col("班级") is not None:
+            i_class, i_course = find_col("班级"), find_col("学科", "课程")
+            i_student, i_usual, i_exam = (
+                find_col("学号"), find_col("平时"), find_col("考试"),
+            )
+        else:
+            i_class = i_course = None
+            i_student = find_col("学号") if find_col("学号") is not None else 0
+            i_usual = find_col("平时") if find_col("平时") is not None else 1
+            i_exam = find_col("考试") if find_col("考试") is not None else 2
+
+        def cell(row_vals, idx):
+            if idx is None or idx >= len(row_vals):
+                return None
+            return row_vals[idx]
+
+        # 班级/学科 名称↔ID 缓存（支持 名称 或 ID 两种填法）
+        class_cache = {c.id: c for c in CampusClass.objects.filter(del_flag="0")}
+        class_by_name = {c.class_name: c for c in class_cache.values()}
+        course_cache = {c.id: c for c in CampusCourse.objects.filter(del_flag="0")}
+        course_by_name = {c.course_name: c for c in course_cache.values()}
+        current_term = CampusTerm.objects.filter(is_current="1", del_flag="0").first()
+        offering_cache: dict[tuple[int, int], CampusCourseOffering | None] = {}
+
+        def resolve_class(cell):
+            if cell is None or str(cell).strip() == "":
+                return class_cache.get(int(class_id)) if class_id else None
+            v = str(cell).strip()
+            if v.isdigit():
+                return class_cache.get(int(v))
+            return class_by_name.get(v)
+
+        def resolve_course(cell):
+            if cell is None or str(cell).strip() == "":
+                return course_cache.get(int(course_id)) if course_id else None
+            v = str(cell).strip()
+            if v.isdigit():
+                return course_cache.get(int(v))
+            return course_by_name.get(v)
+
+        def resolve_offering(cls, course):
+            """(班级, 学科) → 当前学期教学班，结果缓存。"""
+            if cls is None or course is None:
+                return None
+            key = (cls.id, course.id)
+            if key in offering_cache:
+                return offering_cache[key]
+            qs = CampusCourseOffering.objects.filter(
+                class_field_id=cls.id, course_id=course.id, del_flag="0"
+            )
+            if current_term:
+                qs = qs.filter(term_id=current_term.id)
+            off = qs.select_related("class_field", "course").first()
+            offering_cache[key] = off
+            return off
+
         errors: list[dict] = []
         imported = 0
         now = timezone.now()
         uid = request.user.id
         with transaction.atomic():
             for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-                values = list(row) + [None, None, None]
-                student_no, usual_raw, exam_raw = values[0], values[1], values[2]
-                if student_no is None or str(student_no).strip() == "":
+                values = list(row)
+                class_cell = cell(values, i_class)
+                course_cell = cell(values, i_course)
+                student_no = cell(values, i_student)
+                usual_raw = cell(values, i_usual)
+                exam_raw = cell(values, i_exam)
+                if all(v in (None, "") for v in (class_cell, course_cell, student_no)):
                     continue  # 空行跳过
-                student_no = str(student_no).strip()
+                student_no = "" if student_no is None else str(student_no).strip()
+                if student_no == "":
+                    errors.append({"row": idx, "message": "学号为空"})
+                    continue
                 try:
                     usual = float(usual_raw)
                     exam = float(exam_raw)
@@ -835,11 +1046,29 @@ class ScoreViewSet(AdminModelViewSet):
                 if not (0 <= usual <= 100 and 0 <= exam <= 100):
                     errors.append({"row": idx, "message": f"学号 {student_no} 成绩超出 0~100"})
                     continue
+                cls = resolve_class(class_cell)
+                course = resolve_course(course_cell)
+                # 旧模板兼容：行内班级/学科均未填时，回退到 offering_id 指定的教学班
+                if fallback_offering is not None and cls is None and course is None:
+                    cls = fallback_offering.class_field
+                    course = fallback_offering.course
+                if cls is None:
+                    errors.append({"row": idx, "message": f"学号 {student_no} 班级不存在或未选择"})
+                    continue
+                if course is None:
+                    errors.append({"row": idx, "message": f"学号 {student_no} 学科不存在或未选择"})
+                    continue
+                offering = resolve_offering(cls, course)
+                if offering is None and fallback_offering is not None:
+                    offering = fallback_offering
+                if offering is None:
+                    errors.append({"row": idx, "message": f"学号 {student_no} 班级「{cls.class_name}」学科「{course.course_name}」无当前学期教学班"})
+                    continue
                 student = CampusStudent.objects.filter(
                     student_no=student_no, class_field_id=offering.class_field_id, del_flag="0"
                 ).first()
                 if student is None:
-                    errors.append({"row": idx, "message": f"学号 {student_no} 不属于该教学班班级"})
+                    errors.append({"row": idx, "message": f"学号 {student_no} 不属于班级「{offering.class_field.class_name}」"})
                     continue
                 total = round(usual * ratio[0] / 100 + exam * ratio[1] / 100, 2)
                 score, _created = CampusScore.objects.update_or_create(
@@ -847,6 +1076,7 @@ class ScoreViewSet(AdminModelViewSet):
                     defaults={
                         "usual_score": usual, "exam_score": exam, "total_score": total,
                         "usual_ratio": ratio[0], "exam_ratio": ratio[1],
+                        "is_published": "0", "version": 0,
                         "update_by": uid, "update_time": now, "del_flag": "0",
                     },
                 )
@@ -885,10 +1115,16 @@ class ScoreAuditViewSet(AdminModelViewSet):
         qs = super().get_queryset()
         student_id = self.request.query_params.get("student_id")
         offering_id = self.request.query_params.get("offering_id")
+        class_id = self.request.query_params.get("class_id")
+        course_id = self.request.query_params.get("course_id")
         if student_id:
             qs = qs.filter(student_id=student_id)
         if offering_id:
             qs = qs.filter(offering_id=offering_id)
+        if class_id:
+            qs = qs.filter(offering__class_field_id=class_id)
+        if course_id:
+            qs = qs.filter(offering__course_id=course_id)
         return qs.order_by("-operation_time")
 
 

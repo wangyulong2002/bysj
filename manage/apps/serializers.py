@@ -5,6 +5,10 @@
 - 外键关联展示名称（department_name/class_name/teacher_name 等）；
 - 请求/响应统一用 DB 字段名（class_id/offering_id 等）。
 """
+import random
+import string
+import time
+
 from django.contrib.auth import get_user_model
 
 from rest_framework import serializers
@@ -27,20 +31,33 @@ from .models import (
 User = get_user_model()
 
 
+def _gen_unique_code(prefix: str, qs, field: str, length: int = 6) -> str:
+    """自动生成唯一业务编码：prefix + 随机字母数字（如 S20260801），冲突自动重试，时间戳兜底。"""
+    chars = string.ascii_uppercase + string.digits
+    for _ in range(30):
+        code = prefix + "".join(random.choices(chars, k=length))
+        if not qs.filter(**{field: code}).exists():
+            return code
+    return f"{prefix}{int(time.time())}"
+
+
 class DepartmentSerializer(serializers.ModelSerializer):
-    """院系（5.3.1）：dept_name + dept_code（唯一）。"""
+    """院系（5.3.1）：dept_name + dept_code（唯一，可留空自动生成）。"""
 
     class Meta:
         model = CampusDepartment
         fields = ["id", "dept_name", "dept_code", "create_time"]
         read_only_fields = ["id", "create_time"]
+        extra_kwargs = {"dept_code": {"required": False, "allow_blank": True}}
 
-    def validate_dept_code(self, value: str) -> str:
-        """院系编码校验：去空白且非空。"""
-        value = value.strip()
-        if not value:
-            raise serializers.ValidationError("院系编码不能为空")
-        return value
+    def validate(self, attrs):
+        """院系编码：缺失/留空自动生成唯一编码（DEPT 前缀）；更新时留空保留原值。"""
+        code = (attrs.get("dept_code") or "").strip()
+        if not code:
+            code = (self.instance.dept_code if self.instance is not None
+                    else _gen_unique_code("DEPT", CampusDepartment.objects.all(), "dept_code"))
+        attrs["dept_code"] = code
+        return attrs
 
 
 class ClassSerializer(serializers.ModelSerializer):
@@ -59,6 +76,12 @@ class ClassSerializer(serializers.ModelSerializer):
         allow_null=True, required=False, write_only=False,
     )
 
+    def get_counselor_name(self, obj) -> str | None:
+        """序列化辅导员展示名（昵称优先，其次用户名）。"""
+        if obj.counselor is None:
+            return None
+        return obj.counselor.nick_name or obj.counselor.username
+
     class Meta:
         model = CampusClass
         fields = [
@@ -67,19 +90,16 @@ class ClassSerializer(serializers.ModelSerializer):
             "create_time",
         ]
         read_only_fields = ["id", "create_time"]
+        extra_kwargs = {"class_code": {"required": False, "allow_blank": True}}
 
-    def get_counselor_name(self, obj) -> str | None:
-        """序列化辅导员展示名（昵称优先，其次用户名）。"""
-        if obj.counselor is None:
-            return None
-        return obj.counselor.nick_name or obj.counselor.username
-
-    def validate_class_code(self, value: str) -> str:
-        """班级编码校验：去空白且非空。"""
-        value = value.strip()
-        if not value:
-            raise serializers.ValidationError("班级编码不能为空")
-        return value
+    def validate(self, attrs):
+        """班级编码：缺失/留空自动生成唯一编码（CLS 前缀）；更新时留空保留原值。"""
+        code = (attrs.get("class_code") or "").strip()
+        if not code:
+            code = (self.instance.class_code if self.instance is not None
+                    else _gen_unique_code("CLS", CampusClass.objects.all(), "class_code"))
+        attrs["class_code"] = code
+        return attrs
 
 
 class CourseSerializer(serializers.ModelSerializer):
@@ -100,13 +120,16 @@ class CourseSerializer(serializers.ModelSerializer):
             "department_id", "department_name", "create_time",
         ]
         read_only_fields = ["id", "create_time"]
+        extra_kwargs = {"course_code": {"required": False, "allow_blank": True}}
 
-    def validate_course_code(self, value: str) -> str:
-        """课程编码校验：去空白且非空。"""
-        value = value.strip()
-        if not value:
-            raise serializers.ValidationError("课程编码不能为空")
-        return value
+    def validate(self, attrs):
+        """课程编码：缺失/留空自动生成唯一编码（CRS 前缀）；更新时留空保留原值。"""
+        code = (attrs.get("course_code") or "").strip()
+        if not code:
+            code = (self.instance.course_code if self.instance is not None
+                    else _gen_unique_code("CRS", CampusCourse.objects.all(), "course_code"))
+        attrs["course_code"] = code
+        return attrs
 
 
 class TermSerializer(serializers.ModelSerializer):
@@ -192,13 +215,16 @@ class StudentSerializer(serializers.ModelSerializer):
             "class_id", "class_name", "enroll_year", "user_id", "create_time",
         ]
         read_only_fields = ["id", "create_time"]
+        extra_kwargs = {"student_no": {"required": False, "allow_blank": True}}
 
-    def validate_student_no(self, value: str) -> str:
-        """学号校验：去空白且非空。"""
-        value = value.strip()
-        if not value:
-            raise serializers.ValidationError("学号不能为空")
-        return value
+    def validate(self, attrs):
+        """学号：缺失/留空自动生成唯一学号（S 前缀）；更新时留空保留原值。"""
+        code = (attrs.get("student_no") or "").strip()
+        if not code:
+            code = (self.instance.student_no if self.instance is not None
+                    else _gen_unique_code("S", CampusStudent.objects.all(), "student_no", length=8))
+        attrs["student_no"] = code
+        return attrs
 
     def create(self, validated_data):
         """创建：剔除联动字段（nick_name/password 由 ViewSet 消费，不进模型）。"""
@@ -255,13 +281,16 @@ class TeacherSerializer(serializers.ModelSerializer):
             "create_time",
         ]
         read_only_fields = ["id", "create_time"]
+        extra_kwargs = {"teacher_no": {"required": False, "allow_blank": True}}
 
-    def validate_teacher_no(self, value: str) -> str:
-        """工号校验：去空白且非空。"""
-        value = value.strip()
-        if not value:
-            raise serializers.ValidationError("工号不能为空")
-        return value
+    def validate(self, attrs):
+        """工号：缺失/留空自动生成唯一工号（T 前缀）；更新时留空保留原值。"""
+        code = (attrs.get("teacher_no") or "").strip()
+        if not code:
+            code = (self.instance.teacher_no if self.instance is not None
+                    else _gen_unique_code("T", CampusTeacher.objects.all(), "teacher_no", length=8))
+        attrs["teacher_no"] = code
+        return attrs
 
     def get_counselor_class_id_list(self, obj) -> list[int]:
         """当前兼任班级 id 列表（ADR-010，前端编辑回显）。"""

@@ -47,7 +47,7 @@
     <el-dialog v-model="dialogVisible" :title="form.id ? '编辑学生' : '新增学生'" width="520px">
       <el-form ref="formRef" :model="form" :rules="rules" label-width="100px">
         <el-form-item label="学号" prop="student_no">
-          <el-input v-model="form.student_no" placeholder="学号（同时作为登录账号）" :disabled="!!form.id" />
+          <el-input v-model="form.student_no" placeholder="留空自动生成（同时作为登录账号）" :disabled="!!form.id" />
         </el-form-item>
         <el-form-item label="姓名" prop="nick_name">
           <el-input v-model="form.nick_name" placeholder="学生姓名" />
@@ -91,7 +91,6 @@ const form = reactive({
   id: null, student_no: '', nick_name: '', class_id: null, enroll_year: '', password: ''
 })
 const rules = {
-  student_no: [{ required: true, message: '请输入学号', trigger: 'blur' }],
   nick_name: [{ required: true, message: '请输入姓名', trigger: 'blur' }],
   class_id: [{ required: true, message: '请选择班级', trigger: 'change' }]
 }

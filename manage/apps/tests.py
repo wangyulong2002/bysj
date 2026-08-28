@@ -292,6 +292,67 @@ class ScheduleConflictTestCase(AdminBaseTestCase):
         self.assertEqual(resp.json()["code"], 4091)
 
 
+class AutoCodeGenerateTestCase(AdminBaseTestCase):
+    """编码自动生成：院系/班级/课程/学生/教师 编码留空时自动生成唯一值。"""
+
+    def test_auto_generated_codes(self):
+        """各业务编码留空提交，自动生成对应前缀唯一编码；学生/教师账号联动。"""
+        # 院系
+        resp = self.client.post("/admin/api/departments", {"dept_name": "自动院系"}, format="json")
+        self.assertEqual(resp.json()["code"], 0)
+        dept_code = resp.json()["data"]["dept_code"]
+        self.assertTrue(dept_code.startswith("DEPT"))
+        # 班级
+        resp = self.client.post(
+            "/admin/api/classes",
+            {"class_name": "自动班", "grade": "2026", "department_id": self.dept.pk},
+            format="json",
+        )
+        self.assertEqual(resp.json()["code"], 0)
+        self.assertTrue(resp.json()["data"]["class_code"].startswith("CLS"))
+        # 课程
+        resp = self.client.post(
+            "/admin/api/courses",
+            {"course_name": "自动课", "credit": 2.0, "hours": 32, "department_id": self.dept.pk},
+            format="json",
+        )
+        self.assertEqual(resp.json()["code"], 0)
+        self.assertTrue(resp.json()["data"]["course_code"].startswith("CRS"))
+        # 学生（自动学号 + 联动账号 username=学号）
+        resp = self.client.post(
+            "/admin/api/students",
+            {"nick_name": "自动生", "class_id": self.cls.pk, "enroll_year": "2026", "password": "123456"},
+            format="json",
+        )
+        self.assertEqual(resp.json()["code"], 0)
+        student_no = resp.json()["data"]["student_no"]
+        self.assertTrue(student_no.startswith("S"))
+        self.assertTrue(User.objects.filter(username=student_no, role_code="student").exists())
+        # 教师（自动工号 + 联动账号 username=工号）
+        resp = self.client.post(
+            "/admin/api/teachers",
+            {"nick_name": "自动师", "department_id": self.dept.pk, "title": "讲师", "password": "123456"},
+            format="json",
+        )
+        self.assertEqual(resp.json()["code"], 0)
+        teacher_no = resp.json()["data"]["teacher_no"]
+        self.assertTrue(teacher_no.startswith("T"))
+        self.assertTrue(User.objects.filter(username=teacher_no, role_code="teacher").exists())
+
+    def test_auto_code_unique_and_update_keep(self):
+        """两次创建编码不重复；更新时留空保留原编码。"""
+        resp1 = self.client.post("/admin/api/departments", {"dept_name": "自动院系A"}, format="json")
+        resp2 = self.client.post("/admin/api/departments", {"dept_name": "自动院系B"}, format="json")
+        code1 = resp1.json()["data"]["dept_code"]
+        code2 = resp2.json()["data"]["dept_code"]
+        self.assertNotEqual(code1, code2)
+        # 更新留空 → 保留原编码
+        pk = resp1.json()["data"]["id"]
+        resp3 = self.client.put(f"/admin/api/departments/{pk}", {"dept_name": "改名院系"}, format="json")
+        self.assertEqual(resp3.json()["code"], 0)
+        self.assertEqual(resp3.json()["data"]["dept_code"], code1)
+
+
 class AdminPermissionTestCase(AdminBaseTestCase):
     """T2-1 配置：非 admin 角色访问 /admin/api/** → 4031。"""
 
@@ -806,6 +867,111 @@ class ScoreAdminTestCase(AdminBaseTestCase):
         data = resp.json()["data"]
         self.assertEqual(data["imported"], 1)
         self.assertEqual(len(data["errors"]), 2)
+
+    def test_score_import_excel_new_template(self):
+        """新模板（班级|学科|学号|平时成绩|考试成绩）：按 班级+学科 定位当前学期教学班。"""
+        from io import BytesIO
+
+        from openpyxl import Workbook
+
+        # 当前学期（基类 self.term is_current=1）下的教学班
+        offering_cur = CampusCourseOffering.objects.create(
+            course=self.course, term=self.term, class_field=self.cls,
+            teacher=self.t_user, del_flag="0",
+        )
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["班级", "学科", "学号", "平时成绩", "考试成绩"])
+        ws.append([self.cls.class_name, self.course.course_name, self.student.student_no, 88, 92])  # 成功
+        ws.append([self.cls.class_name, self.course.course_name, self.student.student_no, 150, 70])  # 超范围
+        ws.append(["不存在的班级", self.course.course_name, self.student.student_no, 80, 70])  # 班级不存在
+        ws.append([self.cls.class_name, "不存在的课程", self.student.student_no, 80, 70])  # 学科不存在
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        resp = self.client.post("/admin/api/scores/import", {"file": buf}, format="multipart")
+        self.assertEqual(resp.json()["code"], 0)
+        data = resp.json()["data"]
+        self.assertEqual(data["imported"], 1)
+        self.assertEqual(len(data["errors"]), 3)
+        self.assertTrue(CampusScore.objects.filter(
+            student=self.student, offering=offering_cur, total_score="90.40"
+        ).exists())
+
+    def test_score_import_template_download(self):
+        """模板下载：GET /admin/api/scores/import-template 返回 xlsx，表头六列，自动填充班级学生学号。"""
+        resp = self.client.get(
+            f"/admin/api/scores/import-template?class_id={self.cls.pk}&course_id={self.course.pk}"
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("spreadsheetml", resp["Content-Type"])
+        from io import BytesIO
+
+        from openpyxl import load_workbook
+
+        wb = load_workbook(BytesIO(resp.content))
+        ws = wb.active
+        header = [c.value for c in ws[1]][:5]
+        self.assertEqual(header, ["班级", "学科", "学号", "平时成绩", "考试成绩"])
+        # 数据行预填 班级/学科/学号（自动拉取该班级学生）
+        self.assertEqual(ws.cell(row=2, column=1).value, self.cls.class_name)
+        self.assertEqual(ws.cell(row=2, column=2).value, self.course.course_name)
+        self.assertEqual(ws.cell(row=2, column=3).value, self.student.student_no)
+
+    def test_score_batch_publish(self):
+        """批量发布：未发布→已发布+审计(3)，已发布跳过。"""
+        s2_user = User.objects.create_user(username="M4S002", password="x",
+                                           role_code="student", del_flag="0")
+        student2 = CampusStudent.objects.create(
+            user=s2_user, student_no="M4S002", class_field=self.cls,
+            enroll_year="2023", del_flag="0",
+        )
+        s2 = CampusScore.objects.create(
+            student=student2, offering=self.offering2,
+            usual_score="90.00", exam_score="80.00", total_score="84.00",
+            usual_ratio=40, exam_ratio=60, is_published="1", version=0, del_flag="0",
+        )
+        resp = self.client.post(
+            "/admin/api/scores/batch-publish",
+            {"ids": [self.score.pk, s2.pk]}, format="json",
+        )
+        self.assertEqual(resp.json()["code"], 0)
+        data = resp.json()["data"]
+        self.assertEqual(data["published"], 1)
+        self.assertEqual(data["skipped"], 1)
+        self.score.refresh_from_db()
+        self.assertEqual(self.score.is_published, "1")
+        self.assertTrue(CampusScoreAudit.objects.filter(
+            student=self.student, offering=self.offering2, operation="3"
+        ).exists())
+
+    def test_score_batch_unpublish(self):
+        """批量撤销：已发布→未发布+审计(4)，未发布跳过。"""
+        self.client.post(f"/admin/api/scores/{self.score.pk}/publish")
+        s2_user = User.objects.create_user(username="M4S003", password="x",
+                                           role_code="student", del_flag="0")
+        student2 = CampusStudent.objects.create(
+            user=s2_user, student_no="M4S003", class_field=self.cls,
+            enroll_year="2023", del_flag="0",
+        )
+        s2 = CampusScore.objects.create(
+            student=student2, offering=self.offering2,
+            usual_score="90.00", exam_score="80.00", total_score="84.00",
+            usual_ratio=40, exam_ratio=60, is_published="0", version=0, del_flag="0",
+        )
+        resp = self.client.post(
+            "/admin/api/scores/batch-unpublish",
+            {"ids": [self.score.pk, s2.pk]}, format="json",
+        )
+        self.assertEqual(resp.json()["code"], 0)
+        data = resp.json()["data"]
+        self.assertEqual(data["unpublished"], 1)
+        self.assertEqual(data["skipped"], 1)
+        self.score.refresh_from_db()
+        self.assertEqual(self.score.is_published, "0")
+        self.assertTrue(CampusScoreAudit.objects.filter(
+            student=self.student, offering=self.offering2, operation="4"
+        ).exists())
 
 
 class LeaveAdminTestCase(AdminBaseTestCase):

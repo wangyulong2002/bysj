@@ -49,7 +49,7 @@
           <el-input v-model="form.course_name" placeholder="如：数据结构" />
         </el-form-item>
         <el-form-item label="课程编码" prop="course_code">
-          <el-input v-model="form.course_code" placeholder="如：CS301" />
+          <el-input v-model="form.course_code" placeholder="留空自动生成" />
         </el-form-item>
         <el-form-item label="学分" prop="credit">
           <el-input-number v-model="form.credit" :min="0.5" :max="10" :step="0.5" />
@@ -90,8 +90,7 @@ const form = reactive({
   id: null, course_name: '', course_code: '', credit: 3, hours: 48, department_id: null
 })
 const rules = {
-  course_name: [{ required: true, message: '请输入课程名称', trigger: 'blur' }],
-  course_code: [{ required: true, message: '请输入课程编码', trigger: 'blur' }]
+  course_name: [{ required: true, message: '请输入课程名称', trigger: 'blur' }]
 }
 
 async function load() {

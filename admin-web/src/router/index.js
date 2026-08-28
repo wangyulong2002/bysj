@@ -95,7 +95,8 @@ const routes = [
 ]
 
 const router = createRouter({
-  history: createWebHistory(),
+  // SPA 由 Django 挂载在 /admin/ 前缀下（config/urls.py AdminWebView），base 必须一致
+  history: createWebHistory('/admin/'),
   routes
 })
 
