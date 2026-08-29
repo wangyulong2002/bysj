@@ -320,16 +320,17 @@ CREATE TABLE `campus_score_audit` (
 -- ============================================================
 -- 5.3.9 公告表（发布人 → campus.sys_user）
 -- 公告不产生站内消息（B-11，msg_type=3 不生成）
+-- v2.5（ADR-011）：移除班级公告类型——删除 ann_type=3 与 target_class_id，
+--   索引改挂 target_department_id；正式环境结构变更仍以 Django migrations 为准（P0-1）
 -- ============================================================
---     用途：公告（校园/院系/班级，置顶/发布状态机）（5.3.9）
+--     用途：公告（校园/院系，置顶/发布状态机）（5.3.9）
 
 DROP TABLE IF EXISTS `campus_announcement`;
 CREATE TABLE `campus_announcement` (
     `id`                   bigint       NOT NULL AUTO_INCREMENT COMMENT '主键',
     `title`                varchar(100) NOT NULL COMMENT '标题',
     `content`              longtext     COMMENT '内容',
-    `ann_type`             char(1)      NOT NULL COMMENT '1校园 2院系 3班级',
-    `target_class_id`      bigint       DEFAULT NULL COMMENT '班级公告目标班级（ann_type=3 时填，可空；v1 单目标）',
+    `ann_type`             char(1)      NOT NULL COMMENT '1校园 2院系（v2.5 移除 3班级，ADR-011）',
     `target_department_id` bigint       DEFAULT NULL COMMENT '院系公告目标院系（ann_type=2 时填，可空）',
     `publisher_id`         bigint       DEFAULT NULL COMMENT '发布人（sys_user.id，仅管理员）',
     `is_top`               char(1)      NOT NULL DEFAULT '0' COMMENT '是否置顶',
@@ -342,10 +343,9 @@ CREATE TABLE `campus_announcement` (
     `del_flag`             char(1)      NOT NULL DEFAULT '0' COMMENT '逻辑删除',
     PRIMARY KEY (`id`),
     KEY `idx_announcement_status_publish` (`status`, `publish_time`),
-    KEY `idx_announcement_type` (`ann_type`, `target_class_id`),
+    KEY `idx_announcement_type` (`ann_type`, `target_department_id`),
     KEY `idx_announcement_dept` (`target_department_id`),
     CONSTRAINT `fk_announcement_publisher` FOREIGN KEY (`publisher_id`) REFERENCES `sys_user`(`id`) ON DELETE RESTRICT,
-    CONSTRAINT `fk_announcement_class`     FOREIGN KEY (`target_class_id`)     REFERENCES `campus_class`(`id`)  ON DELETE RESTRICT,
     CONSTRAINT `fk_announcement_dept`      FOREIGN KEY (`target_department_id`) REFERENCES `campus_department`(`id`) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='公告表';
 
@@ -493,8 +493,10 @@ CREATE TABLE `campus_rag_chunk` (
 -- ============================================================
 -- 5.3.17 问答日志表
 -- ip 落库前哈希/脱敏（P2-18）；索引含 create_time/ip（C-06）
+-- v2.6（ADR-012/8.4.1）：增加 refuse_reason 记录拒答原因 + idx_rag_log_refuse 支撑拒答率观测
+--   （正式环境结构变更仍以 Django migrations 为准，P0-1）
 -- ============================================================
---     用途：AI 问答日志（问题/回答/引用来源/反馈）（5.3.17）
+--     用途：AI 问答日志（问题/回答/引用来源/反馈/拒答原因）（5.3.17）
 
 DROP TABLE IF EXISTS `campus_rag_log`;
 CREATE TABLE `campus_rag_log` (
@@ -510,6 +512,7 @@ CREATE TABLE `campus_rag_log` (
     `cost_time_ms`      int          NOT NULL DEFAULT 0 COMMENT '总耗时',
     `ip`                varchar(50)  DEFAULT NULL COMMENT '提问者 IP（P2-18：落库前哈希/脱敏）',
     `feedback`          char(1)      NOT NULL DEFAULT '0' COMMENT '0未评 1赞 2踩',
+    `refuse_reason`     varchar(20)  DEFAULT NULL COMMENT '拒答原因（v2.6/ADR-012：no_context 无相关资料 / out_of_scope 越界领域 / unsafe 敏感内容；未拒答为 NULL）',
     `create_by`         bigint       DEFAULT NULL COMMENT '创建人',
     `create_time`       datetime     DEFAULT CURRENT_TIMESTAMP COMMENT '时间',
     `update_by`         bigint       DEFAULT NULL COMMENT '更新人',
@@ -518,7 +521,8 @@ CREATE TABLE `campus_rag_log` (
     PRIMARY KEY (`id`),
     KEY `idx_rag_log_session` (`session_id`),
     KEY `idx_rag_log_create_time` (`create_time`),
-    KEY `idx_rag_log_ip_time` (`ip`, `create_time`)
+    KEY `idx_rag_log_ip_time` (`ip`, `create_time`),
+    KEY `idx_rag_log_refuse` (`refuse_reason`, `create_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='问答日志表';
 
 -- ============================================================
@@ -666,7 +670,7 @@ DELETE FROM sys_dict_type
 -- ============================================================
 INSERT INTO sys_dict_type (dict_name, dict_type, status, create_by, create_time, remark) VALUES
 ('请假类型', 'campus_leave_type', '0', 1, NOW(), '请假申请的类型：事假/病假/其他'),
-('公告类型', 'campus_ann_type', '0', 1, NOW(), '公告类型：校园/院系/班级'),
+('公告类型', 'campus_ann_type', '0', 1, NOW(), '公告类型：校园/院系（v2.5 移除班级，ADR-011）'),
 ('成绩等级', 'campus_score_level', '0', 1, NOW(), '成绩等级：优秀/良好/中等/及格/不及格'),
 ('周次', 'campus_weekday', '0', 1, NOW(), '星期映射（1~7）'),
 ('请假状态', 'campus_leave_status', '0', 1, NOW(), '请假流程状态'),
@@ -692,12 +696,11 @@ INSERT INTO sys_dict_data (dict_sort, dict_label, dict_value, dict_type, css_cla
 (4, '撤销', '3', 'campus_leave_status', '', 'info', 'N', '0', 1, NOW(), '');
 
 -- ============================================================
--- 公告类型（5.3.9：1校园 2院系 3班级）
+-- 公告类型（5.3.9：1校园 2院系；v2.5 移除 3班级，ADR-011）
 -- ============================================================
 INSERT INTO sys_dict_data (dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, status, create_by, create_time, remark) VALUES
 (1, '校园', '1', 'campus_ann_type', '', 'primary', 'Y', '0', 1, NOW(), ''),
-(2, '院系', '2', 'campus_ann_type', '', 'success', 'N', '0', 1, NOW(), ''),
-(3, '班级', '3', 'campus_ann_type', '', 'warning', 'N', '0', 1, NOW(), '');
+(2, '院系', '2', 'campus_ann_type', '', 'success', 'N', '0', 1, NOW(), '');
 
 -- ============================================================
 -- 公告状态（5.3.9：0草稿 1发布 2下架）

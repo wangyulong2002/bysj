@@ -212,8 +212,7 @@ class CampusAnnouncement(models.Model):
     id = models.BigAutoField(primary_key=True, db_comment='主键')
     title = models.CharField(max_length=100, db_comment='标题')
     content = models.TextField(blank=True, null=True, db_comment='内容')
-    ann_type = models.CharField(max_length=1, db_comment='1校园 2院系 3班级')
-    target_class = models.ForeignKey(CampusClass, models.DO_NOTHING, blank=True, null=True, db_comment='班级公告目标班级（ann_type=3 时填，可空；v1 单目标）')
+    ann_type = models.CharField(max_length=1, db_comment='1校园 2院系（v2.5/ADR-011：移除 3班级）')
     target_department = models.ForeignKey(CampusDepartment, models.DO_NOTHING, blank=True, null=True, db_comment='院系公告目标院系（ann_type=2 时填，可空）')
     publisher = models.ForeignKey('users.CustomUser', models.RESTRICT, blank=True, null=True, db_comment='发布人（sys_user.id，仅管理员）')
     is_top = models.CharField(max_length=1, db_comment='是否置顶')
@@ -361,6 +360,10 @@ class CampusRagLog(models.Model):
     cost_time_ms = models.IntegerField(db_comment='总耗时')
     ip = models.CharField(max_length=50, blank=True, null=True, db_comment='提问者 IP（P2-18：落库前哈希/脱敏）')
     feedback = models.CharField(max_length=1, db_comment='0未评 1赞 2踩')
+    refuse_reason = models.CharField(
+        max_length=20, blank=True, null=True,
+        db_comment='拒答原因（v2.6/ADR-012 8.4.1：no_context 无相关资料 / out_of_scope 越界领域 / unsafe 敏感内容；未拒答为 NULL）',
+    )
     create_by = models.BigIntegerField(blank=True, null=True, db_comment='创建人')
     create_time = models.DateTimeField(blank=True, null=True, db_comment='时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')

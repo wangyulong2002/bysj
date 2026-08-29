@@ -80,17 +80,11 @@
           <el-select v-model="form.ann_type" placeholder="选择类型" style="width: 100%" @change="onTypeChange">
             <el-option label="校园公告" value="1" />
             <el-option label="院系公告" value="2" />
-            <el-option label="班级公告" value="3" />
           </el-select>
         </el-form-item>
         <el-form-item v-if="form.ann_type === '2'" label="目标院系" prop="target_department_id">
           <el-select v-model="form.target_department_id" placeholder="选择目标院系" filterable clearable style="width: 100%">
             <el-option v-for="d in deptOptions" :key="d.id" :label="d.dept_name" :value="d.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item v-if="form.ann_type === '3'" label="目标班级" prop="target_class_id">
-          <el-select v-model="form.target_class_id" placeholder="选择目标班级" filterable clearable style="width: 100%">
-            <el-option v-for="c in classOptions" :key="c.id" :label="c.class_name" :value="c.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="置顶">
@@ -112,9 +106,10 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search } from '@element-plus/icons-vue'
-import { announcementApi, departmentApi, classApi } from '../../api/modules'
+import { announcementApi, departmentApi } from '../../api/modules'
 
-const TYPE_NAMES = { 1: '校园公告', 2: '院系公告', 3: '班级公告' }
+// v2.5/ADR-011：班级公告类型已移除，类型仅 1校园 / 2院系
+const TYPE_NAMES = { 1: '校园公告', 2: '院系公告' }
 const STATUS_NAMES = { 0: '草稿', 1: '已发布', 2: '已下架' }
 
 const loading = ref(false)
@@ -123,13 +118,12 @@ const rows = ref([])
 const total = ref(0)
 const query = reactive({ page: 1, page_size: 10, keyword: '', ann_type: '', status: '' })
 const deptOptions = ref([])
-const classOptions = ref([])
 
 const dialogVisible = ref(false)
 const formRef = ref()
 const form = reactive({
   id: null, title: '', content: '', ann_type: '1',
-  target_department_id: null, target_class_id: null, is_top: '0', status: '0'
+  target_department_id: null, is_top: '0', status: '0'
 })
 const rules = {
   title: [{ required: true, message: '请输入公告标题', trigger: 'blur' }],
@@ -159,27 +153,22 @@ async function load() {
 }
 
 async function loadOptions() {
-  const [depts, classes] = await Promise.all([
-    departmentApi.list({ page_size: 100 }),
-    classApi.list({ page_size: 200 })
-  ])
+  const depts = await departmentApi.list({ page_size: 100 })
   deptOptions.value = depts.results || []
-  classOptions.value = classes.results || []
 }
 
 function onTypeChange() {
   form.target_department_id = null
-  form.target_class_id = null
 }
 
 function openDialog(row) {
   Object.assign(form, row
     ? {
         id: row.id, title: row.title, content: row.content, ann_type: row.ann_type,
-        target_department_id: row.target_department_id, target_class_id: row.target_class_id,
+        target_department_id: row.target_department_id,
         is_top: row.is_top, status: row.status
       }
-    : { id: null, title: '', content: '', ann_type: '1', target_department_id: null, target_class_id: null, is_top: '0', status: '0' })
+    : { id: null, title: '', content: '', ann_type: '1', target_department_id: null, is_top: '0', status: '0' })
   dialogVisible.value = true
 }
 
@@ -191,7 +180,6 @@ async function onSave() {
       title: form.title, content: form.content, ann_type: form.ann_type, is_top: form.is_top
     }
     if (form.ann_type === '2') payload.target_department_id = form.target_department_id
-    if (form.ann_type === '3') payload.target_class_id = form.target_class_id
     if (form.id) {
       await announcementApi.update(form.id, payload)
       ElMessage.success('公告已更新')

@@ -443,7 +443,7 @@ class AnnouncementTestCase(AdminBaseTestCase):
     """T3-1：公告 CRUD + 状态流转（草稿→发布→下架）+ RAG 任务联动 + 权限。
 
     覆盖验收要点（验收标准 3）：
-    - 类型（校园/院系/班级）与单目标校验（4.2 P1-07）；
+    - 类型（校园/院系，v2.5 ADR-011 移除班级）与单目标校验（4.2 P1-07）；
     - 置顶、状态流转闭环；
     - 发布记录 publish_time/publisher_id（T3-1 完成事项）；
     - 发布/下架写 campus_rag_task（8.3 触发点）；
@@ -479,8 +479,8 @@ class AnnouncementTestCase(AdminBaseTestCase):
         self.assertEqual(data["ann_type"], "1")
         self.assertIsNone(data["publish_time"])
 
-    def test_announcement_create_class_requires_target(self):
-        """班级公告（ann_type=3）未选目标班级 → 4001。"""
+    def test_announcement_class_type_rejected(self):
+        """v2.5/ADR-011：班级公告类型（ann_type=3）已移除 → 4001。"""
         resp = self._create_draft(ann_type="3")
         self.assertEqual(resp.json()["code"], 4001)
         self.assertIn("班级", resp.json()["message"])
@@ -492,8 +492,8 @@ class AnnouncementTestCase(AdminBaseTestCase):
         self.assertIn("院系", resp.json()["message"])
 
     def test_announcement_create_school_ignores_target(self):
-        """校园公告指定目标班级/院系 → 4001。"""
-        resp = self._create_draft(ann_type="1", target_class_id=self.cls.pk)
+        """校园公告指定目标院系 → 4001（v2.5：班级目标字段已移除）。"""
+        resp = self._create_draft(ann_type="1", target_department_id=self.dept.pk)
         self.assertEqual(resp.json()["code"], 4001)
 
     def test_publish_sets_time_and_writes_rag_task(self):

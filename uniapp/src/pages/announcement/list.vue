@@ -1,6 +1,6 @@
 <template>
   <view class="ann-page">
-    <!-- 类型 Tab（校园/院系/班级，T3-4） -->
+    <!-- 类型 Tab（校园/院系，T3-4；v2.5：班级公告已移除） -->
     <view class="card-shell">
       <view class="card-core tab-core">
         <view
@@ -80,10 +80,10 @@ export default {
   data() {
     return {
       tabs: [
+        // v2.5/ADR-011：班级公告已移除，仅保留校园/院系
         { value: '', name: '全部' },
         { value: '1', name: '校园' },
-        { value: '2', name: '院系' },
-        { value: '3', name: '班级' }
+        { value: '2', name: '院系' }
       ],
       currentType: '',
       keyword: '',
@@ -108,8 +108,8 @@ export default {
       uni.showToast({ title, icon: 'none' })
     },
     tagClass(type) {
-      // 类型标签配色（校园/院系/班级）
-      return { '1': 'tag-school', '2': 'tag-dept', '3': 'tag-class' }[type] || ''
+      // 类型标签配色（校园/院系，v2.5 移除班级）
+      return { '1': 'tag-school', '2': 'tag-dept' }[type] || ''
     },
     formatTime(t) {
       // 发布时间展示：YYYY-MM-DD

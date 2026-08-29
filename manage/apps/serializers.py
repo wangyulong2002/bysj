@@ -409,23 +409,19 @@ class LeaveSerializer(serializers.ModelSerializer):
 class AnnouncementSerializer(serializers.ModelSerializer):
     """公告（5.3.9 / T3-1）：类型/置顶/状态流转 + 单目标（4.2，P1-07）。
 
-    - 班级公告（ann_type=3）必须选目标班级；院系公告（ann_type=2）必须选目标院系；
-    - 校园公告（ann_type=1）不得指定目标班级/院系；
+    **v2.5（ADR-011）**：移除班级公告类型——`ann_type` 仅 1校园/2院系，`target_class`
+    字段随 migration 删除，序列化层不再暴露 `target_class_id`/`target_class_name`。
+
+    - 院系公告（ann_type=2）必须选目标院系；
+    - 校园公告（ann_type=1）不得指定目标院系；
     - publisher_id/publish_time 由服务端状态流转写入（只读，4.2 唯一发布方）。
     """
 
-    target_class_name = serializers.CharField(
-        source="target_class.class_name", read_only=True, default=None
-    )
     target_department_name = serializers.CharField(
         source="target_department.dept_name", read_only=True, default=None
     )
     publisher_name = serializers.SerializerMethodField()
 
-    target_class_id = serializers.PrimaryKeyRelatedField(
-        source="target_class", queryset=CampusClass.objects.all(),
-        allow_null=True, required=False, write_only=False,
-    )
     target_department_id = serializers.PrimaryKeyRelatedField(
         source="target_department", queryset=CampusDepartment.objects.all(),
         allow_null=True, required=False, write_only=False,
@@ -435,7 +431,6 @@ class AnnouncementSerializer(serializers.ModelSerializer):
         model = CampusAnnouncement
         fields = [
             "id", "title", "content", "ann_type",
-            "target_class_id", "target_class_name",
             "target_department_id", "target_department_name",
             "publisher_id", "publisher_name",
             "is_top", "status", "publish_time", "create_time", "update_time",
@@ -448,15 +443,19 @@ class AnnouncementSerializer(serializers.ModelSerializer):
             return None
         return obj.publisher.nick_name or obj.publisher.username
 
+    def validate_ann_type(self, value):
+        """公告类型校验（v2.5：班级公告 3 已移除）。"""
+        if value not in ("1", "2"):
+            raise serializers.ValidationError("公告类型仅支持：1校园 2院系（班级公告已移除）")
+        return value
+
     def validate(self, attrs):
         """目标类型与 ann_type 匹配校验（4.2：单目标发布，P1-07）。"""
         ann_type = attrs.get("ann_type")
         if ann_type == "2" and not attrs.get("target_department"):
             raise serializers.ValidationError({"target_department_id": "院系公告必须选择目标院系"})
-        if ann_type == "3" and not attrs.get("target_class"):
-            raise serializers.ValidationError({"target_class_id": "班级公告必须选择目标班级"})
-        if ann_type == "1" and (attrs.get("target_class") or attrs.get("target_department")):
-            raise serializers.ValidationError("校园公告无需指定目标班级/院系")
+        if ann_type == "1" and attrs.get("target_department"):
+            raise serializers.ValidationError("校园公告无需指定目标院系")
         return attrs
 
 

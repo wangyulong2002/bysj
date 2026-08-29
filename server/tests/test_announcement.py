@@ -1,8 +1,8 @@
 """T3-2/T3-3 公告模块测试（4.2 / 2.3 / 10.1 / 10.2 / 10.3）。
 
 覆盖：
-- 列表可见范围（2.3）：校园公告所有人可见；班级公告/院系公告按角色收敛；
-  学生越权查他人班级公告、院系公告 → 不可见；
+- 列表可见范围（2.3）：校园公告所有人可见；院系公告按角色收敛；
+  学生越权查他人院系公告 → 不可见（**v2.5/ADR-011：班级公告已移除，按院系判定**）；
 - 草稿不可见（仅管理端发布，4.2 P0-02）；
 - 置顶优先 + 发布时间倒序、关键字筛选、分页；
 - 详情：可见返回、越权 4032（IDOR）、不存在 4001、未登录 4011；
@@ -29,8 +29,8 @@ def announcement_data(client: TestClient, test_user_id: int):
     - 依赖 conftest.test_user_id 创建 publisher（sys_user 999999）；
     - 两个院系（D1/D2）、两个班级（班1 属 D1 / 班2 属 D2）；
     - 学生（班1）、教师（任教班1）、辅导员（带班1+班2）；
-    - 公告：校园×2（A1 置顶 / A2）、班级1(A3)、班级2(A4)、
-      院系1(A5)、院系2(A6)、草稿(A7)。
+    - 公告（v2.5：无班级公告）：校园×2（A1 置顶 / A2）、
+      院系1(A3)、院系2(A4)、院系1第二条(A5)、院系2第二条(A6)、草稿(A7)。
     """
     try:
         with engine.begin() as conn:
@@ -76,25 +76,25 @@ def announcement_data(client: TestClient, test_user_id: int):
             # 公告（publisher=admin 测试账号 999999）
             conn.execute(text(
                 "INSERT INTO campus_announcement "
-                "(id, title, content, ann_type, target_class_id, target_department_id, "
+                "(id, title, content, ann_type, target_department_id, "
                 " publisher_id, is_top, status, publish_time, create_time, update_time, del_flag) "
                 "VALUES "
-                "(:a1, '校园置顶公告', '置顶内容', '1', NULL, NULL, :pub, '1', '1', '2026-08-20 10:00:00', NOW(), NOW(), '0'),"
-                "(:a2, '校园普通公告', '普通内容', '1', NULL, NULL, :pub, '0', '1', '2026-08-21 10:00:00', NOW(), NOW(), '0'),"
-                "(:a3, '班级1通知', '班1内容', '3', :cl1, NULL, :pub, '0', '1', '2026-08-22 10:00:00', NOW(), NOW(), '0'),"
-                "(:a4, '班级2通知', '班2内容', '3', :cl2, NULL, :pub, '0', '1', '2026-08-23 10:00:00', NOW(), NOW(), '0'),"
-                "(:a5, '院系1公告', '院系1内容', '2', NULL, :d1, :pub, '0', '1', '2026-08-24 10:00:00', NOW(), NOW(), '0'),"
-                "(:a6, '院系2公告', '院系2内容', '2', NULL, :d2, :pub, '0', '1', '2026-08-25 10:00:00', NOW(), NOW(), '0'),"
-                "(:a7, '草稿公告', '草稿内容', '1', NULL, NULL, :pub, '0', '0', NULL, NOW(), NOW(), '0')"
+                "(:a1, '校园置顶公告', '置顶内容', '1', NULL, :pub, '1', '1', '2026-08-20 10:00:00', NOW(), NOW(), '0'),"
+                "(:a2, '校园普通公告', '普通内容', '1', NULL, :pub, '0', '1', '2026-08-21 10:00:00', NOW(), NOW(), '0'),"
+                "(:a3, '院系1公告', '院系1内容', '2', :d1, :pub, '0', '1', '2026-08-22 10:00:00', NOW(), NOW(), '0'),"
+                "(:a4, '院系2公告', '院系2内容', '2', :d2, :pub, '0', '1', '2026-08-23 10:00:00', NOW(), NOW(), '0'),"
+                "(:a5, '院系1公告B', '院系1内容B', '2', :d1, :pub, '0', '1', '2026-08-24 10:00:00', NOW(), NOW(), '0'),"
+                "(:a6, '院系2公告B', '院系2内容B', '2', :d2, :pub, '0', '1', '2026-08-25 10:00:00', NOW(), NOW(), '0'),"
+                "(:a7, '草稿公告', '草稿内容', '1', NULL, :pub, '0', '0', NULL, NOW(), NOW(), '0')"
             ), {"a1": _RID, "a2": _RID + 1, "a3": _RID + 2, "a4": _RID + 3,
                 "a5": _RID + 4, "a6": _RID + 5, "a7": _RID + 6, "pub": test_user_id,
-                "cl1": _RID, "cl2": _RID + 1, "d1": _RID, "d2": _RID + 1})
+                "d1": _RID, "d2": _RID + 1})
         yield {
             "student": _RID, "teacher": _RID + 1, "counselor": _RID + 2,
             "class1": _RID, "class2": _RID + 1, "dept1": _RID, "dept2": _RID + 1,
             "school_top": _RID, "school_normal": _RID + 1,
-            "class1_ann": _RID + 2, "class2_ann": _RID + 3,
-            "dept1_ann": _RID + 4, "dept2_ann": _RID + 5, "draft": _RID + 6,
+            "dept1_ann": _RID + 2, "dept2_ann": _RID + 3,
+            "dept1_ann_b": _RID + 4, "dept2_ann_b": _RID + 5, "draft": _RID + 6,
         }
     finally:
         with engine.begin() as conn:
@@ -133,43 +133,43 @@ def _ann_ids(data) -> set:
 
 # ===== T3-2：列表可见范围（2.3 数据权限）=====
 
-def test_student_sees_school_class1_dept1(client: TestClient, announcement_data):
-    """学生（班1/院系1）：可见 校园 + 班1班级公告 + 院系1院系公告（测试数据）。"""
+def test_student_sees_school_and_own_dept(client: TestClient, announcement_data):
+    """学生（班1/院系1）：可见 校园公告 + 院系1公告（2 条）。"""
     data = _json(client.get("/api/announcements",
                             headers=_headers(announcement_data["student"], "student")))
     ids = _ann_ids(data)
     assert {announcement_data["school_top"], announcement_data["school_normal"],
-            announcement_data["class1_ann"], announcement_data["dept1_ann"]} <= ids
+            announcement_data["dept1_ann"], announcement_data["dept1_ann_b"]} <= ids
 
 
-def test_student_cannot_see_other_class_dept(client: TestClient, announcement_data):
-    """学生：不可见班2班级公告与院系2院系公告（2.3 收敛）。"""
+def test_student_cannot_see_other_dept(client: TestClient, announcement_data):
+    """学生：不可见院系2公告（2.3 收敛）。"""
     data = _json(client.get("/api/announcements",
                             headers=_headers(announcement_data["student"], "student")))
     ids = _ann_ids(data)
-    assert announcement_data["class2_ann"] not in ids
     assert announcement_data["dept2_ann"] not in ids
+    assert announcement_data["dept2_ann_b"] not in ids
 
 
 def test_teacher_sees_teaching_scope(client: TestClient, announcement_data):
-    """教师（任教班1）：可见 校园 + 班1 + 院系1（档案院系）。"""
+    """教师（任教班1/档案院系1）：可见 校园 + 院系1；不可见院系2。"""
     data = _json(client.get("/api/announcements",
                             headers=_headers(announcement_data["teacher"], "teacher")))
     ids = _ann_ids(data)
     assert {announcement_data["school_top"], announcement_data["school_normal"],
-            announcement_data["class1_ann"], announcement_data["dept1_ann"]} <= ids
-    assert announcement_data["class2_ann"] not in ids
+            announcement_data["dept1_ann"], announcement_data["dept1_ann_b"]} <= ids
     assert announcement_data["dept2_ann"] not in ids
+    assert announcement_data["dept2_ann_b"] not in ids
 
 
 def test_counselor_sees_all_managed(client: TestClient, announcement_data):
-    """兼任教师（带班1+2/院系1+2，counselor_id=本人）：可见全部已发布测试公告。"""
+    """兼任教师（带班1+2 → 院系1+2，counselor_id=本人）：可见全部已发布测试公告。"""
     data = _json(client.get("/api/announcements",
                             headers=_headers(announcement_data["counselor"], "teacher")))
     ids = _ann_ids(data)
     assert {announcement_data["school_top"], announcement_data["school_normal"],
-            announcement_data["class1_ann"], announcement_data["class2_ann"],
-            announcement_data["dept1_ann"], announcement_data["dept2_ann"]} <= ids
+            announcement_data["dept1_ann"], announcement_data["dept1_ann_b"],
+            announcement_data["dept2_ann"], announcement_data["dept2_ann_b"]} <= ids
     assert announcement_data["draft"] not in ids
 
 
@@ -196,11 +196,16 @@ def test_top_first_then_publish_desc(client: TestClient, announcement_data):
 
 
 def test_filter_by_type_and_keyword(client: TestClient, announcement_data):
-    """类型 + 关键字筛选。"""
-    # 班级类型
-    data = _json(client.get("/api/announcements", params={"ann_type": "3"},
+    """类型 + 关键字筛选（v2.5：类型仅 1校园/2院系）。"""
+    # 院系类型（兼任教师可见院系1+2 全部 4 条院系公告）
+    data = _json(client.get("/api/announcements", params={"ann_type": "2"},
                             headers=_headers(announcement_data["counselor"], "teacher")))
-    assert _ann_ids(data) == {announcement_data["class1_ann"], announcement_data["class2_ann"]}
+    assert _ann_ids(data) == {announcement_data["dept1_ann"], announcement_data["dept1_ann_b"],
+                              announcement_data["dept2_ann"], announcement_data["dept2_ann_b"]}
+    # 已移除的班级类型（ann_type=3）→ 参数校验拒绝（统一异常处理包装为 code=4001）
+    resp3 = client.get("/api/announcements", params={"ann_type": "3"},
+                       headers=_headers(announcement_data["counselor"], "teacher"))
+    assert resp3.json()["code"] == 4001
     # 关键字
     data = _json(client.get("/api/announcements", params={"keyword": "置顶"},
                             headers=_headers(announcement_data["student"], "student")))
@@ -230,7 +235,7 @@ def test_pagination(client: TestClient, announcement_data):
             break
     assert total >= 4
     assert {announcement_data["school_top"], announcement_data["school_normal"],
-            announcement_data["class1_ann"], announcement_data["dept1_ann"]} <= seen
+            announcement_data["dept1_ann"], announcement_data["dept1_ann_b"]} <= seen
 
 
 # ===== T3-2：详情 =====
@@ -246,9 +251,9 @@ def test_detail_visible_with_content(client: TestClient, announcement_data):
     assert data["publisher_name"] == "测试账号"
 
 
-def test_detail_forbidden_other_class(client: TestClient, announcement_data):
-    """详情越权：学生访问班2班级公告 → 4032（防 IDOR）。"""
-    resp = client.get(f"/api/announcements/{announcement_data['class2_ann']}",
+def test_detail_forbidden_other_dept(client: TestClient, announcement_data):
+    """详情越权：学生访问院系2公告 → 4032（防 IDOR）。"""
+    resp = client.get(f"/api/announcements/{announcement_data['dept2_ann']}",
                       headers=_headers(announcement_data["student"], "student"))
     assert resp.json()["code"] == 4032
 
@@ -317,4 +322,4 @@ def test_cache_fallback_when_redis_down(client: TestClient, announcement_data, m
                             headers=_headers(announcement_data["student"], "student")))
     ids = _ann_ids(data)
     assert announcement_data["school_top"] in ids
-    assert announcement_data["class2_ann"] not in ids  # 降级时权限过滤仍生效
+    assert announcement_data["dept2_ann"] not in ids  # 降级时权限过滤仍生效

@@ -382,11 +382,11 @@ class AnnouncementViewSet(AdminModelViewSet):
     - 状态机：0 草稿 → 1 发布 → 2 下架（4.2，唯一发布方为管理端）；
     - 发布记录 publish_time/publisher_id，发布/下架/删除触发 RAG 任务（8.3）
       与 `ann:version` 缓存失效（P1-11/T3-3）；
-    - 班级公告选目标班级、院系公告选目标院系（单目标，P1-07）。
+    - 院系公告选目标院系（单目标，P1-07；**v2.5/ADR-011：班级公告类型已移除**）。
     """
 
     queryset = CampusAnnouncement.objects.select_related(
-        "target_class", "target_department", "publisher"
+        "target_department", "publisher"
     ).all()
     serializer_class = AnnouncementSerializer
     search_fields = ("title", "content")
