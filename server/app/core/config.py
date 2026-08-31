@@ -52,6 +52,16 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "deepseek-chat"
     EMB_MODEL: str = "doubao-embedding"
     EMB_DIM: int = 2560
+    # 生成调用约束（8.4 注入防护第 5 层：限制输出 token；8.6 P95≤4s）
+    LLM_TIMEOUT_SECONDS: float = 10.0
+    LLM_MAX_TOKENS: int = 1024
+    # Embedding 批量大小（T7-1：Worker 切分后整批向量化，8~16 条/批）
+    EMB_BATCH_SIZE: int = 16
+
+    # LLM 兜底通道（v2.7/ADR-013：可选，仅生成兜底、Embedding 不兜底；缺省视为未启用）
+    AGNES_BASE_URL: str = ""
+    AGNES_API_KEY: str = ""
+    AGNES_MODEL: str = "agnes-2.5-flash"
 
     # RAG
     RAG_TOP_N: int = 5
@@ -59,6 +69,13 @@ class Settings(BaseSettings):
     RAG_RATE_PER_MIN: int = 10
     RAG_RATE_PER_DAY: int = 100
     RAG_LOG_RETENTION_DAYS: int = 30
+    # 检索相关度三档阈值（v2.6/8.4.1，由 T7-7 标定，禁止硬编码到业务代码）
+    RAG_SCORE_HIGH: float = 0.75
+    RAG_SCORE_LOW: float = 0.45
+    # 领域围栏开关（v2.6/8.4.1：1 启用 L0 规则闸门 + L2 领域围栏；0 仅保留 L1）
+    RAG_STRICT_DOMAIN: int = 1
+    # Worker 开关（测试环境置 0，避免 TestClient 拉起后台调度）
+    RAG_WORKER_ENABLED: int = 1
 
     # 文件
     FILE_UPLOAD_DIR: str = "./uploads"

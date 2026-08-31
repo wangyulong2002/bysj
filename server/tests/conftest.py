@@ -8,6 +8,9 @@
 import os
 import sys
 
+# 测试环境关闭 RAG Worker 后台调度（T7-3），须在导入 app 之前设置
+os.environ.setdefault("RAG_WORKER_ENABLED", "0")
+
 import pytest  # pyright: ignore[reportMissingImports]
 from fastapi.testclient import TestClient
 from sqlalchemy import text

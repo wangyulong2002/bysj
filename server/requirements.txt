@@ -12,6 +12,13 @@ cryptography>=41.0
 # Redis（缓存+向量+限流）
 redis>=5.0
 
+# ===== RAG（T7-1，8.2 技术底座）=====
+openai>=1.50          # 方舟 OpenAI 兼容接口（生成+Embedding+Agnes 兜底）
+langchain>=1.0        # RAG 编排（自定义 Retriever，不用内置 VectorStore 抽象）
+langchain-openai>=1.0 # ChatOpenAI 生成端入口
+numpy>=2.0            # 2560 维 float32 序列化
+APScheduler>=3.10     # Worker 定时调度（30s 一轮 + 日志清理）
+
 # JWT
 PyJWT>=2.8
 

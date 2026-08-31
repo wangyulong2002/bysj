@@ -80,6 +80,12 @@
       </view>
     </view>
 
+    <!-- 游客公开入口（8.5/7.1：AI 校园助手无需登录） -->
+    <view class="ai-entry" @tap="goAiChat">
+      <text class="ai-entry-text">🤖 游客可先体验「AI 校园助手」</text>
+      <text class="ai-entry-arrow">›</text>
+    </view>
+
     <view class="footer">首次使用请先联系管理员开通账号</view>
   </view>
 </template>
@@ -171,6 +177,10 @@ export default {
       setTimeout(() => {
         uni.reLaunch({ url: '/pages/index/index' })
       }, 300)
+    },
+    goAiChat() {
+      // AI 校园助手游客入口（T7-6：chat/suggest/feedback 均公开接口，未登录可直达）
+      uni.navigateTo({ url: '/pages/ai/chat' })
     }
   }
 }
@@ -393,5 +403,29 @@ export default {
   text-align: center;
   font-size: $fs-12;
   color: $ink-2;
+}
+
+/* AI 校园助手游客入口（T7-6） */
+.ai-entry {
+  margin-top: 32rpx;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24rpx 28rpx;
+  background: $brand-soft;
+  border: 2rpx solid rgba(14, 116, 144, 0.3);
+  border-radius: $radius-ctrl;
+  transition: transform 0.25s $ease-premium;
+  &:active {
+    transform: scale(0.98);
+  }
+}
+.ai-entry-text {
+  font-size: $fs-14;
+  color: $brand-deep;
+}
+.ai-entry-arrow {
+  font-size: $fs-20;
+  color: $brand-deep;
 }
 </style>

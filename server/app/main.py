@@ -24,6 +24,7 @@ from app.api import (  # pyright: ignore[reportImplicitRelativeImport]
     leave,
     message,
     profile,
+    rag_chat,
     score,
     timetable,
 )
@@ -42,9 +43,16 @@ logger = logging.getLogger("campus")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期：启动/关闭日志（T0-3）。"""
+    """应用生命周期：启动/关闭日志（T0-3）+ RAG Worker 调度（T7-3，8.3）。"""
     logger.info("=== %s 启动 (env=%s) ===", settings.APP_NAME, settings.APP_ENV)
+    if settings.RAG_WORKER_ENABLED:
+        # T7-3：APScheduler 每 30s 一轮（崩溃恢复→领取→处理）+ 每日日志清理
+        from app.rag import worker  # pyright: ignore[reportImplicitRelativeImport]
+        worker.start_scheduler()
     yield
+    if settings.RAG_WORKER_ENABLED:
+        from app.rag import worker  # pyright: ignore[reportImplicitRelativeImport]
+        worker.stop_scheduler()
     logger.info("=== %s 关闭 ===", settings.APP_NAME)
 
 
@@ -132,6 +140,8 @@ app.include_router(leave.router, prefix=settings.API_PREFIX, tags=["leaves"])
 app.include_router(message.router, prefix=settings.API_PREFIX, tags=["messages"])
 # 个人信息（4.5 / M6-T6-1：GET/PUT /api/profile + phone.full）
 app.include_router(profile.router, prefix=settings.API_PREFIX, tags=["profile"])
+# RAG 问答（8.4 / T7-4：POST /api/rag/chat 公开接口，游客可问）
+app.include_router(rag_chat.router, prefix=settings.API_PREFIX, tags=["rag"])
 
 
 @app.get("/")

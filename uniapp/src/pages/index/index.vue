@@ -37,7 +37,7 @@
           <view class="entry" @tap="goLeaveList">我的请假</view>
           <view class="entry" @tap="goMessageList">消息</view>
           <view class="entry" @tap="goLeaveApprove">审批</view>
-          <view class="entry entry-empty">·</view>
+          <view class="entry entry-ai" @tap="goAiChat">AI 助手</view>
         </view>
       </view>
     </view>
@@ -134,6 +134,10 @@ export default {
     goProfile() {
       // 个人信息（M6-T6-2）
       uni.navigateTo({ url: '/pages/profile/profile' })
+    },
+    goAiChat() {
+      // AI 校园助手（T7-6：公开接口，登录用户直达；游客从登录页进入）
+      uni.navigateTo({ url: '/pages/ai/chat' })
     },
     async onUnbind() {
       // 微信解绑：二次确认后调用解绑接口，失败给出提示
@@ -266,6 +270,10 @@ export default {
   &:active {
     transform: scale(0.96);
   }
+}
+.entry-ai {
+  background: $brand-soft;
+  border-color: rgba(14, 116, 144, 0.3);
 }
 
 .op-row {

@@ -164,7 +164,9 @@ def test_teacher_sees_teaching_scope(client: TestClient, announcement_data):
 
 def test_counselor_sees_all_managed(client: TestClient, announcement_data):
     """兼任教师（带班1+2 → 院系1+2，counselor_id=本人）：可见全部已发布测试公告。"""
-    data = _json(client.get("/api/announcements",
+    # page_size=50：dev 库存量已发布公告（120000+）会占满默认第 1 页（10 条），
+    # 避免分页截断导致断言误报（测试与开发数据隔离）
+    data = _json(client.get("/api/announcements", params={"page_size": 50},
                             headers=_headers(announcement_data["counselor"], "teacher")))
     ids = _ann_ids(data)
     assert {announcement_data["school_top"], announcement_data["school_normal"],

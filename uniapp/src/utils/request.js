@@ -76,7 +76,8 @@ export function request(method, path, data = {}, options = {}) {
         if (body.code === 4011) {
           handleUnauthorized()
         }
-        reject({ code: body.code, message: body.message || '请求失败' })
+        // 携带 data 供降级场景使用（如 RAG 5001 返回检索资料列表，T7-6）
+        reject({ code: body.code, message: body.message || '请求失败', data: body.data })
       },
       fail(err) {
         reject({ code: -1, message: err.errMsg || '网络异常，请检查网络' })

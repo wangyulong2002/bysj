@@ -16,6 +16,7 @@ from rest_framework import serializers
 from .models import (
     CampusAnnouncement,
     CampusClass,
+    CampusKnowledge,
     CampusCourse,
     CampusCourseOffering,
     CampusCourseSchedule,
@@ -490,4 +491,52 @@ class ScheduleSerializer(serializers.ModelSerializer):
         if ps is not None and pe is not None:
             if ps < 1 or pe < ps:
                 raise serializers.ValidationError("节次范围不合法（period_start ≤ period_end 且 ≥1）")
+        return attrs
+
+
+class KnowledgeSerializer(serializers.ModelSerializer):
+    """知识库文档（T7-2，5.3.15/8.3）：CRUD + 发布/下架 + content_hash 变更检测。
+
+    - category：1师资 2宿舍 3食堂 4制度 5招生 6设施 7其他；
+    - status：0草稿 1发布（发布即触发向量化，任务写入见 knowledge_flow）；
+    - content_hash 只读：服务端对剥离 HTML 后的正文（含标题）取 SHA-256（P0-09）。
+    """
+
+    publisher_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CampusKnowledge
+        fields = [
+            "id", "title", "category", "content", "tags",
+            "content_hash", "status",
+            "publisher", "publisher_name", "create_time", "update_time",
+        ]
+        read_only_fields = ["id", "content_hash", "publisher", "create_time", "update_time"]
+
+    def get_publisher_name(self, obj) -> str | None:
+        """发布人展示名（昵称优先）。"""
+        if obj.publisher is None:
+            return None
+        return obj.publisher.nick_name or obj.publisher.username
+
+    def validate_category(self, value):
+        """分类校验（5.3.15 枚举）。"""
+        if value not in ("1", "2", "3", "4", "5", "6", "7"):
+            raise serializers.ValidationError("分类仅支持：1师资 2宿舍 3食堂 4制度 5招生 6设施 7其他")
+        return value
+
+    def validate_status(self, value):
+        """状态校验（0草稿 1发布）。"""
+        if value not in ("0", "1"):
+            raise serializers.ValidationError("状态仅支持：0草稿 1发布")
+        return value
+
+    def validate(self, attrs):
+        """标题/正文必填（向量化数据源完整性）。"""
+        title = attrs.get("title", getattr(self.instance, "title", None))
+        content = attrs.get("content", getattr(self.instance, "content", None))
+        if not (title or "").strip():
+            raise serializers.ValidationError({"title": "标题不能为空"})
+        if not (content or "").strip():
+            raise serializers.ValidationError({"content": "正文不能为空"})
         return attrs

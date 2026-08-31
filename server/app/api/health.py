@@ -7,7 +7,7 @@ from fastapi import APIRouter
 from sqlalchemy import text
 
 from app.core.database import engine
-from app.core.redis_client import ping_redis, redis_client
+from app.core.redis_client import ping_redis
 
 router = APIRouter(tags=["health"])
 
@@ -37,12 +37,11 @@ def health():
     except Exception as exc:  # noqa: BLE001
         checks["redis"] = {"status": "DOWN", "error": str(exc)[:200]}
 
-    # RAG 索引（v1 阶段尚未建索引时视为 not_configured，不判 DOWN）
+    # RAG 索引（T7-3 对接 9.6 C-10：num_docs>0 且无 rag:rebuilding → UP）
+    from app.rag.worker import rag_index_health  # noqa: PLC0415 —— 延迟导入避免循环依赖
+
     try:
-        if redis_client.exists("rag_index_ready"):
-            checks["rag_index"] = {"status": "UP"}
-        else:
-            checks["rag_index"] = {"status": "NOT_CONFIGURED"}
+        checks["rag_index"] = rag_index_health()
     except Exception:  # noqa: BLE001
         checks["rag_index"] = {"status": "UNKNOWN"}
 

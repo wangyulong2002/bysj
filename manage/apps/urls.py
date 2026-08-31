@@ -16,10 +16,13 @@ from .views import (
     AnnouncementViewSet,
     ClassOptionsView,
     ClassViewSet,
+    KnowledgeViewSet,
     CourseViewSet,
     DepartmentViewSet,
     LeaveViewSet,
     OfferingViewSet,
+    RagIndexRebuildView,
+    RagIndexView,
     ScheduleViewSet,
     ScoreAuditViewSet,
     ScoreViewSet,
@@ -42,9 +45,13 @@ router.register("teachers", TeacherViewSet, basename="teacher")
 router.register("scores", ScoreViewSet, basename="score")
 router.register("score-audits", ScoreAuditViewSet, basename="score-audit")
 router.register("leaves", LeaveViewSet, basename="leave")
+router.register("knowledge", KnowledgeViewSet, basename="knowledge")
 
 # 非 ViewSet 路由（下拉选项，供自建管理前端表单使用）
 urlpatterns = [
     path("users/options", UserOptionsView.as_view(), name="user-options"),
     path("classes/options", ClassOptionsView.as_view(), name="class-options"),
+    # RAG 索引管理（T7-3，8.3：状态查询/全量重建请求）
+    path("rag/index", RagIndexView.as_view(), name="rag-index"),
+    path("rag/index/rebuild", RagIndexRebuildView.as_view(), name="rag-index-rebuild"),
 ] + router.urls

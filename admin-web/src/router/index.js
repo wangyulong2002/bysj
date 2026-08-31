@@ -88,6 +88,12 @@ const routes = [
         name: 'announcements',
         component: () => import('../views/announcement/index.vue'),
         meta: { title: '公告管理', icon: 'Bell' }
+      },
+      {
+        path: 'knowledge',
+        name: 'knowledge',
+        component: () => import('../views/knowledge/index.vue'),
+        meta: { title: '知识库管理', icon: 'Collection' }
       }
     ]
   },

@@ -29,10 +29,19 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.views import exception_handler as drf_exception_handler
 
+from .announcement_cache import get_redis_client
 from .announcement_flow import on_announcement_deleted, on_announcement_saved
+from .knowledge_flow import (
+    compute_content_hash,
+    on_knowledge_deleted,
+    on_knowledge_saved,
+)
 from .models import (
     CampusAnnouncement,
     CampusClass,
+    CampusKnowledge,
+    CampusRagChunk,
+    CampusRagTask,
     CampusCourse,
     CampusCourseOffering,
     CampusCourseSchedule,
@@ -51,6 +60,7 @@ User = get_user_model()
 from .serializers import (
     AnnouncementSerializer,
     ClassSerializer,
+    KnowledgeSerializer,
     CourseSerializer,
     DepartmentSerializer,
     LeaveSerializer,
@@ -1231,3 +1241,183 @@ class ClassOptionsView(APIView):
             qs = qs.filter(counselor_id__isnull=True)
         data = [{"id": c.id, "class_name": c.class_name} for c in qs.order_by("id")]
         return Response({"code": 0, "message": "ok", "data": data}, status=200)
+
+
+# ===== T7-2：知识库管理（8.3 / 5.3.15 / P0-08 / P0-09）=====
+
+class KnowledgeViewSet(AdminModelViewSet):
+    """知识库管理（T7-2，/admin/api/knowledge，8.3/5.3.15）。
+
+    - CRUD + 发布（publish）/下架（take-down）action；
+    - content_hash 变更检测（P0-09）：保存时服务端对剥离 HTML 后的正文
+      （含标题）取 SHA-256；hash 与 status 均未变 → 不写向量化任务；
+    - 同事务任务写入（P0-08）：发布/编辑已发布 → upsert（source_type=2）；
+      下架/删除 → delete；任务与业务数据一起提交。
+
+    RAG 数据源（8.3）：数据源一公告（T3-1 已联动）+ 数据源二知识库（本接口）。
+    """
+
+    queryset = CampusKnowledge.objects.select_related("publisher").all()
+    serializer_class = KnowledgeSerializer
+    search_fields = ("title", "tags", "content")
+
+    def get_queryset(self):
+        """列表：分类/状态筛选（6.4）+ 逻辑删除过滤 + 稳定排序。"""
+        qs = super().get_queryset()
+        category = self.request.query_params.get("category")
+        status = self.request.query_params.get("status")
+        if category:
+            qs = qs.filter(category=category)
+        if status:
+            qs = qs.filter(status=status)
+        return qs.order_by("-update_time", "-id")
+
+    def _save_with_flow(self, serializer, is_create: bool):
+        """保存 + content_hash 计算 + 同事务写 RAG 任务（P0-08/P0-09）。"""
+        uid = self.request.user.id
+        now = timezone.now()
+        instance = serializer.instance
+        old_status = instance.status if instance else None
+        old_hash = instance.content_hash if instance else None
+        audit = ({"create_by": uid, "create_time": now, "update_by": uid,
+                  "update_time": now, "del_flag": "0"} if is_create
+                 else {"update_by": uid, "update_time": now})
+        with transaction.atomic():
+            obj = serializer.save(**audit)
+            # P0-09：新 hash 取保存后的最终 title/content（支持 PATCH 局部更新）
+            new_hash = compute_content_hash(obj.title, obj.content)
+            obj.content_hash = new_hash
+            update_fields = ["content_hash"]
+            if obj.status == "1" and obj.publisher_id is None:
+                obj.publisher_id = uid  # 首次发布记录发布人
+                update_fields.append("publisher")
+            obj.save(update_fields=update_fields)
+            on_knowledge_saved(obj, old_status=old_status, old_hash=old_hash,
+                               is_create=is_create)
+        return obj
+
+    def create(self, request, *args, **kwargs):
+        """新增知识文档（默认草稿；直接传 status=1 即创建并发布）。"""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        obj = self._save_with_flow(serializer, is_create=True)
+        return Response({"code": 0, "message": "知识文档创建成功", "data": serializer.data},
+                        status=200)
+
+    def update(self, request, *args, **kwargs):
+        """编辑知识文档（已发布且内容变化 → 重新向量化，P0-09）。"""
+        partial = kwargs.pop("partial", False)
+        serializer = self.get_serializer(self.get_object(), data=request.data,
+                                         partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self._save_with_flow(serializer, is_create=False)
+        return Response({"code": 0, "message": "知识文档更新成功", "data": serializer.data},
+                        status=200)
+
+    def destroy(self, request, *args, **kwargs):
+        """逻辑删除（5.1）：已发布文档触发 delete RAG 任务。"""
+        instance = self.get_object()
+        with transaction.atomic():
+            instance.del_flag = "2"
+            instance.update_by = request.user.id
+            instance.update_time = timezone.now()
+            instance.save(update_fields=["del_flag", "update_by", "update_time"])
+            on_knowledge_deleted(instance)
+        return Response({"code": 0, "message": "知识文档已删除", "data": {"id": instance.pk}},
+                        status=200)
+
+    @action(detail=True, methods=["post"], url_path="publish")
+    def publish(self, request, pk=None):
+        """发布（草稿 → 发布）：发布即触发向量化（5.3.15）。"""
+        instance = self.get_object()
+        if instance.status == "1":
+            raise ValidationError({"status": "知识文档已发布，无需重复发布"})
+        with transaction.atomic():
+            instance.status = "1"
+            instance.publisher_id = instance.publisher_id or request.user.id
+            instance.update_by = request.user.id
+            instance.update_time = timezone.now()
+            instance.save(update_fields=["status", "publisher", "update_by", "update_time"])
+            on_knowledge_saved(instance, old_status="0", old_hash=instance.content_hash)
+        return Response({"code": 0, "message": "知识文档已发布，将自动向量化",
+                         "data": {"id": instance.pk}}, status=200)
+
+    @action(detail=True, methods=["post"], url_path="take-down")
+    def take_down(self, request, pk=None):
+        """下架（发布 → 草稿）：移除对应向量（8.3）。"""
+        instance = self.get_object()
+        if instance.status != "1":
+            raise ValidationError({"status": "仅已发布知识文档可下架"})
+        with transaction.atomic():
+            instance.status = "0"
+            instance.update_by = request.user.id
+            instance.update_time = timezone.now()
+            instance.save(update_fields=["status", "update_by", "update_time"])
+            on_knowledge_saved(instance, old_status="1", old_hash=instance.content_hash)
+        return Response({"code": 0, "message": "知识文档已下架，向量将移除",
+                         "data": {"id": instance.pk}}, status=200)
+
+
+# ===== T7-3：RAG 索引管理（8.3 全量重建兜底 / 9.6 C-10 状态）=====
+
+REBUILD_REQUEST_KEY = "rag:rebuild_requested"
+REBUILDING_KEY = "rag:rebuilding"
+
+
+class RagIndexView(APIView):
+    """RAG 索引状态（T7-3，GET /admin/api/rag/index）。
+
+    返回 {num_docs(Redis FT.INFO)、chunk_total(MySQL 已向量化分片)、
+    rebuilding(重建中标记)、latest_tasks(最近任务状态)}（6.4/8.3）。
+    """
+
+    permission_classes = [IsAdminRole]
+
+    def get(self, request):
+        try:
+            client = get_redis_client()
+            info = client.execute_command("FT.INFO", "rag_idx")
+            pairs = info if isinstance(info, dict) else dict(zip(info[::2], info[1::2]))
+            num_docs = int(pairs.get("num_docs") or pairs.get(b"num_docs") or 0)
+            rebuilding = bool(client.exists(REBUILDING_KEY))
+        except Exception:  # noqa: BLE001 —— Redis 故障时状态接口不报错，字段置空
+            num_docs, rebuilding = None, None
+
+        chunk_total = CampusRagChunk.objects.filter(status="1", del_flag="0").count()
+        latest_tasks = list(
+            CampusRagTask.objects.filter(del_flag="0")
+            .order_by("-id").values("id", "operation", "source_type", "source_id",
+                                    "status", "retry_count", "last_error",
+                                    "create_time", "update_time")[:5]
+        )
+        data = {
+            "num_docs": num_docs,
+            "chunk_total": chunk_total,
+            "rebuilding": rebuilding,
+            "latest_tasks": latest_tasks,
+        }
+        return Response({"code": 0, "message": "ok", "data": data}, status=200)
+
+
+class RagIndexRebuildView(APIView):
+    """RAG 索引全量重建（T7-3，POST /admin/api/rag/index/rebuild）。
+
+    实现约定（跨进程协作）：索引 DDL/向量写入均在 FastAPI Worker 进程内
+    （`app/rag/worker.py`，RediSearch 客户端与 Embedding 链路唯一实现），
+    本接口只置 `rag:rebuild_requested` 标记（TTL 防残留）；Worker 下一轮
+    检测到请求后执行：置 `rag:rebuilding` → 清空索引 → 重建 → 对全部已发布
+    公告+知识库逐源写 upsert 任务 → 完成后删标记（8.3 兜底流程）。
+    """
+
+    permission_classes = [IsAdminRole]
+
+    def post(self, request):
+        try:
+            client = get_redis_client()
+            client.set(REBUILD_REQUEST_KEY, "1", ex=86400)  # TTL 防请求残留
+        except Exception as exc:  # noqa: BLE001
+            return Response({"code": 5000, "message": f"Redis 不可用，无法发起重建: {exc}",
+                             "data": None}, status=200)
+        return Response({"code": 0,
+                         "message": "重建请求已提交，Worker 将在 30s 内开始执行（8.3 全量重建）",
+                         "data": None}, status=200)

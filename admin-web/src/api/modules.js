@@ -43,3 +43,24 @@ export const announcementApi = {
     return request.post(`/announcements/${id}/take-down`)
   }
 }
+
+/** 知识库（T7-2，8.3）：CRUD + 发布/下架（发布即触发向量化） */
+export const knowledgeApi = {
+  ...crudApi('knowledge'),
+  publish(id) {
+    return request.post(`/knowledge/${id}/publish`)
+  },
+  takeDown(id) {
+    return request.post(`/knowledge/${id}/take-down`)
+  }
+}
+
+/** RAG 索引（T7-3，8.3）：状态查询 / 全量重建请求 */
+export const ragIndexApi = {
+  status() {
+    return request.get('/rag/index')
+  },
+  rebuild() {
+    return request.post('/rag/index/rebuild')
+  }
+}

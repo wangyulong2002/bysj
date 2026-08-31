@@ -32,6 +32,11 @@ def _get_client() -> "redis.Redis":
     return _client
 
 
+def get_redis_client() -> "redis.Redis":
+    """公共入口：共享 Redis 客户端（T7-2 RAG 索引状态等复用）。"""
+    return _get_client()
+
+
 def bump_ann_version() -> None:
     """公告缓存版本自增（发布/下架/删除后调用）。
 

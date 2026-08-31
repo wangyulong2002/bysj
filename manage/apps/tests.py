@@ -1023,3 +1023,194 @@ class LeaveAdminTestCase(AdminBaseTestCase):
         """非 admin 访问请假管理 → 4031。"""
         self.client.force_authenticate(user=self.counselor)
         self.assertEqual(self.client.get("/admin/api/leaves").json()["code"], 4031)
+
+
+class KnowledgeFlowTestCase(AdminBaseTestCase):
+    """T7-2：知识库 CRUD + 发布/下架 + content_hash 变更检测 + RAG 任务联动（P0-08/P0-09）。
+
+    覆盖验收要点（验收标准 11）：
+    - 发布同事务写任务表（upsert）；下架/删除写 delete；
+    - hash 与 status 均未变 → 不写任务（杜绝无变化重复向量化）；
+    - hash 计算剥离 HTML（富文本排版变化不影响变更判定）；
+    - 双数据源联测（公告 source_type=1 / 知识库 source_type=2）；
+    - 非 admin 4031。
+    """
+
+    def _create(self, **overrides):
+        payload = {
+            "title": "新生宿舍指南", "category": "2",
+            "content": "<p>宿舍A栋为四人间，配备空调与独立卫浴。</p>",
+            "tags": "宿舍,新生", "status": "0",
+        }
+        payload.update(overrides)
+        return self.client.post("/admin/api/knowledge", payload, format="json")
+
+    def _tasks(self, pk, operation):
+        return CampusRagTask.objects.filter(
+            source_type="2", source_id=pk, operation=operation, del_flag="0"
+        )
+
+    def test_create_draft_no_task(self):
+        """创建草稿：status=0、content_hash 已计算、不写向量化任务。"""
+        resp = self._create()
+        self.assertEqual(resp.json()["code"], 0)
+        data = resp.json()["data"]
+        self.assertEqual(data["status"], "0")
+        self.assertEqual(len(data["content_hash"]), 64)
+        self.assertEqual(self._tasks(data["id"], "1").count(), 0)
+
+    def test_create_published_writes_upsert(self):
+        """创建即发布：同事务写 upsert 任务（source_type=2）。"""
+        resp = self._create(status="1")
+        pk = resp.json()["data"]["id"]
+        self.assertEqual(resp.json()["code"], 0)
+        self.assertEqual(self._tasks(pk, "1").count(), 1)
+
+    def test_publish_writes_upsert(self):
+        """草稿 → 发布：写 upsert 任务；重复发布 → 4001。"""
+        pk = self._create().json()["data"]["id"]
+        resp = self.client.post(f"/admin/api/knowledge/{pk}/publish")
+        self.assertEqual(resp.json()["code"], 0)
+        self.assertEqual(self._tasks(pk, "1").count(), 1)
+        resp2 = self.client.post(f"/admin/api/knowledge/{pk}/publish")
+        self.assertEqual(resp2.json()["code"], 4001)
+
+    def test_edit_published_no_change_no_task(self):
+        """P0-09 核心：编辑已发布但内容与状态均未变 → 不写新任务。"""
+        pk = self._create(status="1").json()["data"]["id"]
+        before = self._tasks(pk, "1").count()
+        resp = self.client.put(
+            f"/admin/api/knowledge/{pk}",
+            {"title": "新生宿舍指南", "category": "2",
+             "content": "<p>宿舍A栋为四人间，配备空调与独立卫浴。</p>",
+             "tags": "宿舍,新生", "status": "1"},
+            format="json",
+        )
+        self.assertEqual(resp.json()["code"], 0)
+        self.assertEqual(self._tasks(pk, "1").count(), before)
+
+    def test_edit_published_html_reformat_no_task(self):
+        """富文本排版变化（纯文本一致）→ hash 不变 → 不写任务。"""
+        pk = self._create(status="1").json()["data"]["id"]
+        before = self._tasks(pk, "1").count()
+        resp = self.client.put(
+            f"/admin/api/knowledge/{pk}",
+            {"title": "新生宿舍指南", "category": "2",
+             "content": "<div><p>宿舍A栋为四人间，配备空调与独立卫浴。</p></div>",
+             "tags": "宿舍,新生", "status": "1"},
+            format="json",
+        )
+        self.assertEqual(resp.json()["code"], 0)
+        self.assertEqual(self._tasks(pk, "1").count(), before)
+
+    def test_edit_published_content_change_writes_upsert(self):
+        """编辑已发布且正文变化 → 新 upsert 任务。"""
+        pk = self._create(status="1").json()["data"]["id"]
+        before = self._tasks(pk, "1").count()
+        self.client.put(
+            f"/admin/api/knowledge/{pk}",
+            {"title": "新生宿舍指南", "category": "2",
+             "content": "<p>宿舍A栋现为六人间。</p>", "tags": "宿舍", "status": "1"},
+            format="json",
+        )
+        self.assertEqual(self._tasks(pk, "1").count(), before + 1)
+
+    def test_take_down_writes_delete(self):
+        """发布 → 下架：写 delete 任务；未发布下架 → 4001。"""
+        pk = self._create(status="1").json()["data"]["id"]
+        resp = self.client.post(f"/admin/api/knowledge/{pk}/take-down")
+        self.assertEqual(resp.json()["code"], 0)
+        self.assertEqual(self._tasks(pk, "2").count(), 1)
+        resp2 = self.client.post(f"/admin/api/knowledge/{pk}/take-down")
+        self.assertEqual(resp2.json()["code"], 4001)
+
+    def test_delete_published_writes_delete(self):
+        """逻辑删除已发布文档：写 delete 任务。"""
+        pk = self._create(status="1").json()["data"]["id"]
+        resp = self.client.delete(f"/admin/api/knowledge/{pk}")
+        self.assertEqual(resp.json()["code"], 0)
+        self.assertEqual(self._tasks(pk, "2").count(), 1)
+
+    def test_invalid_category_rejected(self):
+        """分类枚举校验：category=9 → 4001。"""
+        resp = self._create(category="9")
+        self.assertEqual(resp.json()["code"], 4001)
+
+    def test_knowledge_list_filters(self):
+        """列表：分类/状态筛选（6.4）。"""
+        self._create(title="食堂文档", category="3", status="1")
+        self._create(title="师资文档", category="1", status="0")
+        resp = self.client.get("/admin/api/knowledge", {"category": "3", "status": "1"})
+        results = resp.json()["data"].get("results", [])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["category"], "3")
+
+    def test_non_admin_forbidden(self):
+        """非 admin 角色访问 /admin/api/knowledge → 4031（6.4/P1-10）。"""
+        self.client.force_authenticate(user=self.teacher)
+        resp = self.client.get("/admin/api/knowledge")
+        self.assertEqual(resp.json()["code"], 4031)
+
+    def test_dual_source_tasks(self):
+        """双数据源联测（8.3）：公告 source_type=1、知识库 source_type=2 均写任务。"""
+        ann_resp = self.client.post(
+            "/admin/api/announcements",
+            {"title": "开学通知", "content": "9月1日开学报到。", "ann_type": "1",
+             "is_top": "0", "status": "1"},
+            format="json",
+        )
+        ann_pk = ann_resp.json()["data"]["id"]
+        kn_resp = self._create(status="1")
+        kn_pk = kn_resp.json()["data"]["id"]
+        self.assertEqual(
+            CampusRagTask.objects.filter(
+                source_type="1", source_id=ann_pk, operation="1", del_flag="0"
+            ).count(), 1
+        )
+        self.assertEqual(
+            CampusRagTask.objects.filter(
+                source_type="2", source_id=kn_pk, operation="1", del_flag="0"
+            ).count(), 1
+        )
+
+    def test_strip_html_and_hash(self):
+        """strip_html 剥离标签/script；纯文本一致 → hash 一致（P0-09）。"""
+        from .knowledge_flow import compute_content_hash, strip_html
+
+        html = "<p>宿舍<b>四人间</b></p><script>alert(1)</script><style>.a{}</style>独立卫浴"
+        self.assertEqual(strip_html(html), "宿舍四人间独立卫浴")
+        # 富文本排版差异（标签 vs 换行/空格）不影响 hash：纯文本一致即一致
+        h1 = compute_content_hash("标题", "<p>内容</p>\n内容二")
+        h2 = compute_content_hash("标题", "内容 内容二")
+        self.assertEqual(h1, h2)
+        self.assertNotEqual(h1, compute_content_hash("标题2", "内容 内容二"))
+
+
+class RagIndexAPITestCase(AdminBaseTestCase):
+    """T7-3：RAG 索引状态/重建请求接口（8.3 兜底 / 6.4）。"""
+
+    def test_index_status_shape(self):
+        """GET /admin/api/rag/index：返回 num_docs/chunk_total/rebuilding/latest_tasks。"""
+        resp = self.client.get("/admin/api/rag/index")
+        self.assertEqual(resp.json()["code"], 0)
+        data = resp.json()["data"]
+        for key in ("num_docs", "chunk_total", "rebuilding", "latest_tasks"):
+            self.assertIn(key, data)
+        self.assertIsInstance(data["chunk_total"], int)
+
+    def test_rebuild_request_sets_marker(self):
+        """POST rebuild：置 rag:rebuild_requested 标记（Worker 消费）。"""
+        from .announcement_cache import get_redis_client
+
+        client = get_redis_client()
+        client.delete("rag:rebuild_requested")
+        resp = self.client.post("/admin/api/rag/index/rebuild")
+        self.assertEqual(resp.json()["code"], 0)
+        self.assertTrue(client.exists("rag:rebuild_requested"))
+        client.delete("rag:rebuild_requested")
+
+    def test_rebuild_non_admin_forbidden(self):
+        """非 admin 发起重建 → 4031。"""
+        self.client.force_authenticate(user=self.teacher)
+        resp = self.client.post("/admin/api/rag/index/rebuild")
+        self.assertEqual(resp.json()["code"], 4031)

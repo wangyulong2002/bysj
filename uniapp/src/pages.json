@@ -104,6 +104,14 @@
         "navigationBarBackgroundColor": "#F8FAFC",
         "navigationBarTextStyle": "black"
       }
+    },
+    {
+      "path": "pages/ai/chat",
+      "style": {
+        "navigationBarTitleText": "AI 校园助手",
+        "navigationBarBackgroundColor": "#F8FAFC",
+        "navigationBarTextStyle": "black"
+      }
     }
   ],
   "globalStyle": {
