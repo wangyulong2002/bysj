@@ -35,7 +35,13 @@
           <!-- AI 气泡（左） -->
           <view v-else class="row row-ai">
             <view class="bubble bubble-ai" :class="{ 'bubble-refuse': m.refused }">
-              <text class="bubble-text">{{ m.text }}</text>
+              <text v-if="m.text" class="bubble-text">{{ m.text }}</text>
+              <!-- T7-8：流式首帧未到时显示打字态（骨架点，禁转圈） -->
+              <view v-if="m.streaming && !m.text" class="dot-row">
+                <view class="dot"></view>
+                <view class="dot"></view>
+                <view class="dot"></view>
+              </view>
             </view>
           </view>
 
@@ -83,7 +89,10 @@
 
           <!-- 5001 降级：展示检索资料列表（不编造） -->
           <view v-if="m.role === 'ai' && m.degraded && m.sources && m.sources.length" class="sources">
-            <view v-for="(s, si) in m.sources" :key="'d' + si" class="source-chip" @tap="openSource(s)">
+            <!-- :key 用简单索引（勿用字符串拼接表达式：uni-app 小程序编译器会将其
+                 展开进 data-event-opts 生成非法 token，如 'd'+si；本 v-for 与上方
+                 正常来源列表分属不同 v-if 分支，同索引即唯一） -->
+            <view v-for="(s, si) in m.sources" :key="si" class="source-chip" @tap="openSource(s)">
               <text class="source-tag" :class="s.type === 'knowledge' ? 'tag-knowledge' : 'tag-announcement'">
                 {{ s.type === 'knowledge' ? '知识库' : '公告' }}
               </text>
@@ -93,8 +102,8 @@
           </view>
         </view>
 
-        <!-- 加载态（骨架屏，禁转圈 spinner） -->
-        <view v-if="pending" class="row row-ai">
+        <!-- 加载态（骨架屏，禁转圈 spinner；流式气泡出现后由其打字态接管） -->
+        <view v-if="typing" class="row row-ai">
           <view class="bubble bubble-ai bubble-typing">
             <view class="dot"></view>
             <view class="dot"></view>
@@ -128,6 +137,7 @@
 
 <script>
 import { get, post } from '../../utils/request'
+import { API_BASE_URL } from '../../utils/config'
 
 const MAX_QUESTION = 500
 
@@ -135,6 +145,39 @@ const MAX_QUESTION = 500
 function genSessionId() {
   const s4 = () => Math.floor((1 + Math.random()) * 0x10000).toString(16).slice(1)
   return `${s4()}${s4()}-${s4()}-${s4()}-${s4()}-${s4()}${s4()}${s4()}`
+}
+
+/** 在字节数组中查找 SSE 帧分隔 "\n\n"（0x0A0A），找不到返回 -1。
+ * 0x0A 不会出现在 UTF-8 多字节序列内部，字节级分帧跨 chunk 安全（T7-8）。 */
+function findDoubleLf(arr) {
+  for (let i = 0; i + 1 < arr.length; i++) {
+    if (arr[i] === 10 && arr[i + 1] === 10) return i
+  }
+  return -1
+}
+
+/** 完整 UTF-8 字节块 → 字符串（帧级解码，规避小程序无 TextDecoder） */
+function utf8ToStr(u8) {
+  let out = ''
+  let i = 0
+  while (i < u8.length) {
+    const b = u8[i]
+    if (b < 0x80) {
+      out += String.fromCharCode(b)
+      i += 1
+    } else if (b < 0xe0) {
+      out += String.fromCharCode(((b & 0x1f) << 6) | (u8[i + 1] & 0x3f))
+      i += 2
+    } else if (b < 0xf0) {
+      out += String.fromCharCode(((b & 0x0f) << 12) | ((u8[i + 1] & 0x3f) << 6) | (u8[i + 2] & 0x3f))
+      i += 3
+    } else {
+      const cp = ((b & 0x07) << 18) | ((u8[i + 1] & 0x3f) << 12) | ((u8[i + 2] & 0x3f) << 6) | (u8[i + 3] & 0x3f)
+      out += String.fromCodePoint(cp)
+      i += 4
+    }
+  }
+  return out
 }
 
 export default {
@@ -152,6 +195,12 @@ export default {
   onLoad() {
     this.sessionId = genSessionId()
     this.loadSuggests()
+  },
+  computed: {
+    /** 骨架屏仅在"未收到首个流式帧"阶段显示（流式气泡的打字态接管后隐藏） */
+    typing() {
+      return this.pending && !this.messages.some((m) => m.role === 'ai' && m.streaming)
+    }
   },
   methods: {
     toast(title) {
@@ -179,12 +228,24 @@ export default {
       }
       this.send(q)
     },
-    async send(question) {
+    /** 发送入口（T7-8）：优先 SSE 流式（POST /api/rag/chat/stream），
+     *  平台不支持/建流失败时回退 JSON 通道（原 T7-6 逻辑） */
+    send(question) {
       if (this.pending) return
       this.draft = ''
       this.messages.push({ role: 'user', text: question })
       this.pending = true
       this.scrollToBottom()
+      this.sendStream(question)
+        .then((ok) => (ok ? null : this.sendByJson(question)))
+        .then(() => {
+          this.pending = false
+          this.scrollToBottom()
+        })
+    },
+
+    /** JSON 通道兜底（T7-6 原逻辑；错误处理与多端一致） */
+    async sendByJson(question) {
       try {
         const data = await post('/api/rag/chat', {
           question,
@@ -217,10 +278,153 @@ export default {
         } else {
           this.toast(err.message || '问答失败，请稍后再试')
         }
-      } finally {
-        this.pending = false
+      }
+    },
+
+    /** SSE 帧处理（T7-8 分片契约）：delta 增量 / done 权威文本 / error 降级 */
+    handleSseFrame(frame, aiMsg) {
+      if (frame.type === 'delta') {
+        aiMsg.text += frame.content
+        this.scrollToBottom()
+        return
+      }
+      if (frame.type === 'done') {
+        // done.answer 为 L2/L3 清洗后的权威文本（哨兵拒答/引用清洗时覆盖流式增量）
+        if (typeof frame.answer === 'string') aiMsg.text = frame.answer
+        aiMsg.sources = frame.sources || []
+        aiMsg.refused = !!frame.refused
+        aiMsg.refuseReason = frame.refuse_reason || null
+        aiMsg.logId = frame.log_id || null
+        aiMsg.completed = true
+        this.scrollToBottom()
+        return
+      }
+      if (frame.type === 'error') {
+        aiMsg.streaming = false
+        aiMsg.completed = true
+        if (frame.code === 5001) {
+          // 降级（9.7）：不编造答案，展示检索资料列表
+          aiMsg.text = frame.message || 'AI 服务暂不可用，以下为相关资料：'
+          aiMsg.degraded = true
+          aiMsg.sources = (frame.data && frame.data.sources) || []
+        } else {
+          aiMsg.text = frame.message || '问答失败，请稍后再试'
+          aiMsg.refused = true
+        }
         this.scrollToBottom()
       }
+    },
+
+    /** SSE 流式发送（T7-8）：H5 用 fetch+ReadableStream，微信小程序用
+     *  uni.request enableChunked（基础库 2.20+）；未收到任何帧时 resolve(false)
+     *  交由 JSON 通道兜底。多轮上下文由 sessionId 串联（后端 _load_history）。 */
+    sendStream(question) {
+      return new Promise((resolve) => {
+        const aiMsg = {
+          role: 'ai', text: '', refused: false, refuseReason: null,
+          sources: [], logId: null, feedbackDone: false,
+          degraded: false, streaming: true, completed: false
+        }
+        this.messages.push(aiMsg)
+        this.scrollToBottom()
+        let gotFrame = false
+        let settled = false
+        const handleBlock = (block) => {
+          const line = block.split('\n').find((l) => l.indexOf('data:') === 0)
+          if (!line) return
+          let frame
+          try {
+            frame = JSON.parse(line.slice(5).trim())
+          } catch (e) {
+            return
+          }
+          gotFrame = true
+          this.handleSseFrame(frame, aiMsg)
+          if (frame.type === 'done' || frame.type === 'error') finish()
+        }
+        const finish = () => {
+          if (settled) return
+          settled = true
+          aiMsg.streaming = false
+          if (!gotFrame) {
+            // 无任何帧（不支持/网络失败）：撤占位气泡 → JSON 兜底
+            if (!aiMsg.text) {
+              const i = this.messages.indexOf(aiMsg)
+              if (i !== -1) this.messages.splice(i, 1)
+            }
+            resolve(false)
+          } else {
+            if (!aiMsg.completed) aiMsg.text += '\n（连接中断，请重试）'
+            resolve(true)
+          }
+        }
+        // #ifdef H5
+        fetch(API_BASE_URL + '/api/rag/chat/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question, session_id: this.sessionId })
+        }).then((resp) => {
+          const ct = resp.headers.get('content-type') || ''
+          if (!resp.ok || ct.indexOf('text/event-stream') === -1) {
+            // 建流前错误（4001/4291/5002 等）走 JSON 兜底分支统一处理
+            return resp.json().then((body) => {
+              const err = new Error(body.message || '问答失败，请稍后再试')
+              err.code = body.code
+              err.data = body.data
+              throw err
+            })
+          }
+          const reader = resp.body.getReader()
+          const decoder = new TextDecoder('utf-8')
+          let buffer = ''
+          const pump = () => reader.read().then((r) => {
+            if (r.done) {
+              finish()
+              return
+            }
+            buffer += decoder.decode(r.value, { stream: true })
+            let idx
+            while ((idx = buffer.indexOf('\n\n')) !== -1) {
+              handleBlock(buffer.slice(0, idx))
+              buffer = buffer.slice(idx + 2)
+            }
+            return pump()
+          })
+          return pump()
+        }).catch(() => finish())
+        // #endif
+        // #ifdef MP-WEIXIN
+        let byteBuf = []
+        const task = uni.request({
+          url: API_BASE_URL + '/api/rag/chat/stream',
+          method: 'POST',
+          data: { question, session_id: this.sessionId },
+          header: { 'Content-Type': 'application/json' },
+          enableChunked: true,   // 基础库 2.20+，onChunkReceived 分片接收
+          responseType: 'arraybuffer',
+          success: () => finish(),
+          fail: () => finish()
+        })
+        if (task && typeof task.onChunkReceived === 'function') {
+          task.onChunkReceived((res) => {
+            // 字节级找 "\n\n" 分帧（0x0A 不在 UTF-8 多字节序列内，跨块安全），
+            // 帧内字节完整后再解码，规避多字节字符被 chunk 截断
+            byteBuf = byteBuf.concat(Array.prototype.slice.call(new Uint8Array(res.data)))
+            let idx = findDoubleLf(byteBuf)
+            while (idx !== -1) {
+              handleBlock(utf8ToStr(byteBuf.slice(0, idx)))
+              byteBuf = byteBuf.slice(idx + 2)
+              idx = findDoubleLf(byteBuf)
+            }
+          })
+        } else {
+          finish()  // 低版本基础库不支持 → JSON 兜底
+        }
+        // #endif
+        // #ifndef H5 || MP-WEIXIN
+        finish()  // 其余平台暂不支持流式 → JSON 兜底
+        // #endif
+      })
     },
     async onFeedback(index, feedback) {
       const m = this.messages[index]
@@ -359,6 +563,12 @@ export default {
 
 /* 打字中（骨架点，禁 spinner） */
 .bubble-typing {
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+}
+/* 流式首帧前的行内打字态（T7-8） */
+.dot-row {
   display: flex;
   align-items: center;
   gap: 10rpx;

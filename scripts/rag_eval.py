@@ -255,7 +255,10 @@ def run_e2e(items: list[dict], base_url: str) -> bool:
         code = payload.get("code")
         if it["category"] == "越界提问":
             oos_n += 1
-            if code == 0 and data.get("refused") and data.get("refuse_reason") == "out_of_scope":
+            # 8.4.1 多级闸门：越界类拒答 reason 因路径而异（L0→out_of_scope，
+            # L1/L2→no_context/unsafe），"拒绝"即达标，reason 不再限定
+            # （2026-08-31 实测：未命中 L0 的 2 条由 L2 兜底返回 no_context）
+            if code == 0 and data.get("refused") and data.get("refuse_reason"):
                 oos_ok += 1
                 refuse_latencies.append(cost)
         elif it["category"] == "无答案":

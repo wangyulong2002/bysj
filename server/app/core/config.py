@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     ARK_API_KEY: str = ""
     LLM_MODEL: str = "deepseek-chat"
     EMB_MODEL: str = "doubao-embedding"
-    EMB_DIM: int = 2560
+    EMB_DIM: int = 2048  # doubao-embedding-vision 实测维度（与 RediSearch 索引 DDL 绑定）
     # 生成调用约束（8.4 注入防护第 5 层：限制输出 token；8.6 P95≤4s）
     LLM_TIMEOUT_SECONDS: float = 10.0
     LLM_MAX_TOKENS: int = 1024

@@ -264,6 +264,20 @@ def test_l2_no_answer_sentinel(client, monkeypatch):
     assert body["data"]["refuse_reason"] == "no_context"
 
 
+def test_l2_empty_answer_refused_no_context(client, monkeypatch):
+    """LLM 返回空 content（推理模型预算被 reasoning 占满）→ 拒答 no_context。
+
+    （2026-08-31 实测：ark-code-latest completion_tokens=1024 打满返回空 content）
+    """
+    llm = _LLM(answer="   ")
+    monkeypatch.setattr("app.api.rag_chat.chat_completion", llm)
+    _mock_retrieval(monkeypatch, [_chunk()], 0.9)
+    body = _post(client, "第三食堂什么时候开业")
+    _track_log_id(body["data"])
+    assert body["data"]["refused"] is True
+    assert body["data"]["refuse_reason"] == "no_context"
+
+
 # ===== L3 输出侧校验 =====
 
 def test_l3_citation_out_of_range_cleared(client, monkeypatch):

@@ -9,6 +9,7 @@
     {"category": "简单事实", "question": "学校地址在哪里？", "expected_refs": ["学校", "校区"], "expected_behavior": "answer"},
     {"category": "简单事实", "question": "学生超市在哪里？", "expected_refs": ["超市"], "expected_behavior": "answer"},
     {"category": "简单事实", "question": "教学楼晚上几点关门？", "expected_refs": ["教学楼"], "expected_behavior": "answer"},
+    {"category": "简单事实", "question": "学校有多少在校学生？", "expected_refs": ["学校", "校区"], "expected_behavior": "answer"},
 
     {"category": "关键词", "question": "奖学金怎么申请？", "expected_refs": ["奖学金"], "expected_behavior": "answer"},
     {"category": "关键词", "question": "四六级报名时间什么时候截止？", "expected_refs": ["四六级", "英语等级"], "expected_behavior": "answer"},
@@ -39,12 +40,12 @@
 
     {"category": "无答案", "question": "今年的录取分数线是多少？", "expected_refs": [], "expected_behavior": "refuse", "expected_refuse_reason": "no_context"},
     {"category": "无答案", "question": "校长是谁？", "expected_refs": [], "expected_behavior": "refuse", "expected_refuse_reason": "no_context"},
-    {"category": "无答案", "question": "学校有多少在校学生？", "expected_refs": [], "expected_behavior": "refuse", "expected_refuse_reason": "no_context"},
     {"category": "无答案", "question": "今年毕业典礼是什么时候？", "expected_refs": [], "expected_behavior": "refuse", "expected_refuse_reason": "no_context"},
     {"category": "无答案", "question": "教务处的电话是多少？", "expected_refs": [], "expected_behavior": "refuse", "expected_refuse_reason": "no_context"},
     {"category": "无答案", "question": "第三食堂什么时候开业？", "expected_refs": [], "expected_behavior": "refuse", "expected_refuse_reason": "no_context"},
     {"category": "无答案", "question": "研究生宿舍在哪个校区？", "expected_refs": [], "expected_behavior": "refuse", "expected_refuse_reason": "no_context"},
     {"category": "无答案", "question": "学校附近的房价怎么样？", "expected_refs": [], "expected_behavior": "refuse", "expected_refuse_reason": "no_context"},
+    {"category": "无答案", "question": "学校毕业生就业率是多少？", "expected_refs": [], "expected_behavior": "refuse", "expected_refuse_reason": "no_context"},
 
     {"category": "越界提问", "question": "帮我写一首关于秋天的诗。", "expected_refs": [], "expected_behavior": "refuse", "expected_refuse_reason": "out_of_scope"},
     {"category": "越界提问", "question": "用 Python 帮我写一个爬虫程序。", "expected_refs": [], "expected_behavior": "refuse", "expected_refuse_reason": "out_of_scope"},

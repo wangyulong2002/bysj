@@ -3,8 +3,11 @@
 - 主通道：火山方舟 deepseek-chat（OpenAI 兼容接口，生成唯一权威选型）；
 - 兜底通道：Agnes（agnes-2.5-flash，OpenAI 兼容）——主通道失败（连接异常/
   超时/429/5xx）时**同一请求内**自动切换重试一次，双通道均失败才抛错走 5001；
-- **仅生成（chat）兜底，Embedding 不兜底**（2560 维向量与方舟 doubao-embedding
+- **仅生成（chat）兜底，Embedding 不兜底**（2048 维向量与方舟 doubao-embedding-vision
   绑定，属向量库 DDL 硬约束，换模型将污染索引）；
+- **主通道为推理模型（ark-code-latest）**：`max_tokens` 需给足
+  （LLM_MAX_TOKENS=1024）——该模型先输出 reasoning_content 再输出 content，
+  预算不足会返回空 content（8.4 L3 降级后答案为空）；
 - `AGNES_*` 任一缺省视为未启用兜底（行为与 v2.6 一致）；
 - 必须显式限制输出 max_tokens（8.4 注入防护第 5 层）并设置请求超时（8.6 P95≤4s）。
 
@@ -104,6 +107,79 @@ def chat_completion(messages: list[dict],
         return _chat(get_agnes_client(), settings.AGNES_MODEL, messages, limit)
     except Exception as exc:  # noqa: BLE001
         raise LLMError(f"LLM 双通道均失败（方舟+Agnes）: {exc}") from exc
+
+
+def chat_completion_stream(messages: list[dict], max_tokens: int | None = None,
+                           usage_out: dict | None = None):
+    """流式生成（T7-8/8.5）：yield 增量文本；主通道方舟 → 首块前失败自动切 Agnes。
+
+    - 逐段 yield 增量文本（str）；
+    - 流结束把 usage 写入 ``usage_out``（dict）：model/prompt_tokens/completion_tokens
+      （SSE 流式响应无 usage 回包，token 数按字符量估算，仅作 campus_rag_log 参考）；
+    - **通道切换仅发生在首个增量产生之前**（连接/鉴权/参数类错误尽早暴露）；
+      中途断流异常向上抛——已发出的增量不回滚（SSE 语义），由接口层推 error 帧；
+    - ``AGNES_*`` 缺省时仅主通道（行为与 v2.6 一致）。
+    """
+    limit = max_tokens or settings.LLM_MAX_TOKENS
+
+    def _open_first(client: openai.OpenAI, model: str):
+        """打开流并强制消费首个含内容的事件（尽早暴露连接/鉴权/参数错误）。
+
+        返回 (stream, iterator, first_piece)；流为空时 first_piece 为 None。
+        """
+        stream = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=limit,
+            timeout=settings.LLM_TIMEOUT_SECONDS,
+            stream=True,
+        )
+        it = iter(stream)
+        for event in it:
+            if not getattr(event, "choices", None):
+                continue  # 跳过 role-only/空事件
+            piece = getattr(event.choices[0].delta, "content", None) or ""
+            return stream, it, piece
+        return stream, it, None
+
+    def _drain(it, first: str | None, model: str):
+        """消费首块之后的流：yield 增量；结束写 usage_out。"""
+        parts = [first] if first else []
+        if first:
+            yield first
+        for event in it:
+            if not getattr(event, "choices", None):
+                continue
+            piece = getattr(event.choices[0].delta, "content", None) or ""
+            if piece:
+                parts.append(piece)
+                yield piece
+        if usage_out is not None:
+            usage_out.clear()
+            usage_out.update({
+                "model": model,
+                "prompt_tokens": sum(len(m.get("content", "")) for m in messages) // 2,
+                "completion_tokens": max(1, len("".join(parts)) // 2),
+            })
+
+    channels: list[tuple[openai.OpenAI, str]] = [(get_ark_client(), settings.LLM_MODEL)]
+    if agnes_enabled():
+        channels.append((get_agnes_client(), settings.AGNES_MODEL))
+
+    last_exc: Exception | None = None
+    for i, (client, model) in enumerate(channels):
+        try:
+            stream, it, first = _open_first(client, model)
+        except Exception as exc:  # noqa: BLE001 —— 连接异常/超时/429/5xx 一律切兜底
+            last_exc = exc
+            if i + 1 < len(channels):
+                logger.warning("LLM 流式主通道(方舟 %s)失败，切换 Agnes 兜底: %s",
+                               settings.LLM_MODEL, exc)
+                continue
+            raise LLMError(f"LLM 主通道失败且未配置兜底: {exc}") from exc
+        yield from _drain(it, first, model)
+        return
+    raise LLMError(f"LLM 流式失败: {last_exc}")  # pragma: no cover —— 空通道列表防御
 
 
 def get_chat_model():

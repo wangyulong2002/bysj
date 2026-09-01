@@ -10,10 +10,12 @@
 """
 import json
 import logging
+import time
 from datetime import datetime
 
 from fastapi import APIRouter, Header, Query
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.api.deps import CurrentUser
 from app.core.database import engine
@@ -233,12 +235,7 @@ def scores_course(
 
 # ===== T4-3：批量录入/修改 =====
 
-@router.post("")
-def scores_upsert(
-    user: CurrentUser,
-    body: dict,
-    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
-) -> dict:
+def _scores_upsert_impl(user: CurrentUser, body: dict) -> dict:
     """教师批量录入/修改成绩（6.3.3，POST 语义）。
 
     - 仅本人任课教学班（4032）；学生必须属于该教学班班级；
@@ -295,25 +292,31 @@ def scores_upsert(
             now = datetime.now()
             if existing is None:
                 # 首次录入（operation=1）
-                conn.execute(
-                    text("INSERT INTO campus_score "
-                         "(student_id, offering_id, usual_score, exam_score, total_score, "
-                         " usual_ratio, exam_ratio, is_published, version, "
-                         " create_by, update_by, update_time, del_flag) "
-                         "VALUES (:sid, :oid, :u, :e, :t, :ur, :er, '0', 0, "
-                         " :cb, :ub, :now, '0')"),
-                    {"sid": sid, "oid": offering_id, "u": usual, "e": exam, "t": total,
-                     "ur": u_ratio, "er": e_ratio, "cb": user.user_id, "ub": user.user_id,
-                     "now": now},
-                )
-                conn.execute(
-                    text("INSERT INTO campus_score_audit "
-                         "(student_id, offering_id, old_score, new_score, old_detail, new_detail, "
-                         " operator_id, operation, operation_time) "
-                         "VALUES (:sid, :oid, NULL, :t, NULL, :nd, :op, '1', :now)"),
-                    {"sid": sid, "oid": offering_id, "t": total, "nd": json.dumps(new_detail),
-                     "op": user.user_id, "now": now},
-                )
+                try:
+                    conn.execute(
+                        text("INSERT INTO campus_score "
+                             "(student_id, offering_id, usual_score, exam_score, total_score, "
+                             " usual_ratio, exam_ratio, is_published, version, "
+                             " create_by, update_by, update_time, del_flag) "
+                             "VALUES (:sid, :oid, :u, :e, :t, :ur, :er, '0', 0, "
+                             " :cb, :ub, :now, '0')"),
+                        {"sid": sid, "oid": offering_id, "u": usual, "e": exam, "t": total,
+                         "ur": u_ratio, "er": e_ratio, "cb": user.user_id, "ub": user.user_id,
+                         "now": now},
+                    )
+                    conn.execute(
+                        text("INSERT INTO campus_score_audit "
+                             "(student_id, offering_id, old_score, new_score, old_detail, new_detail, "
+                             " operator_id, operation, operation_time) "
+                             "VALUES (:sid, :oid, NULL, :t, NULL, :nd, :op, '1', :now)"),
+                        {"sid": sid, "oid": offering_id, "t": total, "nd": json.dumps(new_detail),
+                         "op": user.user_id, "now": now},
+                    )
+                except IntegrityError as exc:
+                    # 并发首次录入：uk_score_student_offering 唯一冲突 →
+                    # 乐观锁语义 4091（他人已先录入，事务由引擎回滚，B-08）
+                    logger.warning("成绩并发录入唯一冲突（student=%s offering=%s）", sid, offering_id)
+                    raise ConflictError(f"学生 {sid} 的成绩已被他人录入，请刷新后重试") from exc
             else:
                 # 修改（operation=2）：乐观锁校验
                 cur_version = int(existing[1])
@@ -346,3 +349,28 @@ def scores_upsert(
             updated += 1
 
     return success({"updated": updated, "warnings": warnings})
+
+
+@router.post("")
+def scores_upsert(
+    user: CurrentUser,
+    body: dict,
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+) -> dict:
+    """教师批量录入/修改成绩（6.3.3）。
+
+    - 并发写入同教学班成绩时可能触发 InnoDB 死锁（1213）——
+      自动重试（B-08 死锁重试约定，重试幂等，`Idempotency-Key` 由中间件保证）；
+    - 其余校验/乐观锁/审计逻辑见 `_scores_upsert_impl`。
+    """
+    for attempt in range(3):
+        try:
+            return _scores_upsert_impl(user, body)
+        except OperationalError as exc:
+            if getattr(exc.orig, "args", [None])[0] != 1213:
+                raise
+            if attempt == 2:
+                raise
+            logger.warning("成绩写入死锁(1213)，第 %d 次重试", attempt + 1)
+            time.sleep(0.05 * (attempt + 1))
+    raise AssertionError("unreachable")  # pragma: no cover

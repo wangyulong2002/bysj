@@ -3,7 +3,7 @@
 - 索引 DDL 以设计 8.2 为权威，字段不得增减：
   `FT.CREATE rag_idx ON HASH PREFIX 1 rag:chunk: SCHEMA
    source_type TAG source_id NUMERIC SORTABLE title TEXT chunk_index NUMERIC
-   embedding VECTOR HNSW 6 TYPE FLOAT32 DIM 2560 DISTANCE_METRIC COSINE`
+   embedding VECTOR HNSW 6 TYPE FLOAT32 DIM {settings.EMB_DIM，默认 2048} DISTANCE_METRIC COSINE`
 - Redis key 约定 `rag:chunk:{chunk_id}`，与 MySQL `campus_rag_chunk.id` 一一对应；
 - 使用**独立二进制 Redis 客户端**（decode_responses=False）：向量 float32 bytes
   不能经文本编解码（公告缓存用的 redis_client 是文本客户端，不复用）；

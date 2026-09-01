@@ -1,6 +1,6 @@
 """Embedding 客户端封装（T7-1，8.2/9.3）。
 
-- 火山方舟 doubao-embedding（2560 维 float32，与向量库 DDL 绑定）；
+- 火山方舟 doubao-embedding-vision（**实测 2048 维** float32，与向量库 DDL 绑定）；
 - **不接入 Agnes 兜底**（换模型将污染索引，ADR-013 边界）；
 - 支持批量（Worker 切分后整批向量化，EMB_BATCH_SIZE=16 条/批）；
 - 实测向量维度与 `EMB_DIM` 一致性校验，不一致 fail-fast（防脏向量入库）。
@@ -33,7 +33,7 @@ def _to_float32_bytes(vector: list[float]) -> bytes:
 
 
 def embed_texts(texts: list[str]) -> list[bytes]:
-    """批量向量化：texts → 2560 维 float32 bytes 列表（与入参顺序一致）。
+    """批量向量化：texts → float32 bytes 列表（维度=EMB_DIM，doubao-embedding-vision 为 2048）。
 
     内部按 EMB_BATCH_SIZE 分批调用方舟接口（建议 8~16 条/批）。
     任何一批失败（含维度校验失败）整体抛 EmbeddingError，由 Worker 记失败重试。

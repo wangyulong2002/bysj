@@ -15,9 +15,11 @@ import base64
 import hashlib
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -65,11 +67,16 @@ def _deserialize(raw: str) -> Response | None:
         return None
 
 
-def _db_insert(biz_key: str, user_id: int | None, method: str, path: str,
-               body_hash: str, resp_status: int, resp_body: str) -> bool:
-    """MySQL 唯一表写入（同事务，由调用方在业务事务内提交）。
+def _db_reserve(biz_key: str, user_id: int | None, method: str, path: str,
+                body_hash: str) -> bool:
+    """业务执行**前**占位插入幂等记录（P1-12 并发语义）。
 
-    返回 True 表示插入成功（首次请求）；返回 False 表示 key 已存在（重复请求）。
+    利用 `uk_idempotency_biz_key` 唯一索引：并发同键请求仅 1 个能占位成功，
+    其余视为重复请求（返回 False）→ 调用方回查首个请求的结果。
+
+    - 返回 True：占位成功（首次请求，可执行业务）；
+    - 返回 False：唯一冲突（并发占用或已完成）；
+    - 其他异常：记告警并返回 True（不阻塞业务）。
     """
     expire = datetime.now() + timedelta(seconds=settings.IDEMPOTENCY_EXPIRE_SECONDS)
     try:
@@ -78,16 +85,44 @@ def _db_insert(biz_key: str, user_id: int | None, method: str, path: str,
                 text(
                     "INSERT INTO campus_idempotency_key "
                     "(biz_key, user_id, method, path, body_hash, response_code, response_body, expire_time) "
-                    "VALUES (:k, :uid, :m, :p, :h, :c, :b, :e) "
-                    "ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)"
+                    "VALUES (:k, :uid, :m, :p, :h, 0, NULL, :e)"
                 ),
+                # response_code NOT NULL：占位用 0；占位态以 response_body IS NULL 识别
                 {"k": biz_key, "uid": user_id, "m": method, "p": path,
-                 "h": body_hash, "c": resp_status, "b": resp_body, "e": expire},
+                 "h": body_hash, "e": expire},
             )
         return True
+    except IntegrityError:
+        return False
     except Exception as exc:  # noqa: BLE001
-        logger.error("幂等表写入失败: %s", exc)
-        raise
+        logger.error("幂等占位写入失败（本次放行）: %s", exc)
+        return True
+
+
+def _db_complete(biz_key: str, resp_status: int, resp_body: str) -> None:
+    """业务完成后回填幂等记录（响应供后续重复请求直接返回）。"""
+    expire = datetime.now() + timedelta(seconds=settings.IDEMPOTENCY_EXPIRE_SECONDS)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE campus_idempotency_key SET response_code = :c, "
+                     "response_body = :b, expire_time = :e WHERE biz_key = :k"),
+                {"k": biz_key, "c": resp_status, "b": resp_body, "e": expire},
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("幂等完成回填失败: %s", exc)
+
+
+def _db_release(biz_key: str) -> None:
+    """业务异常（≥500）时释放占位记录，允许后续重试。"""
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "DELETE FROM campus_idempotency_key "
+                "WHERE biz_key = :k AND response_body IS NULL"
+            ), {"k": biz_key})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("幂等占位释放失败: %s", exc)
 
 
 def _db_lookup(biz_key: str) -> Response | None:
@@ -172,9 +207,32 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             logger.info("幂等命中(MySQL): %s", biz_key)
             return db_resp
 
+        # 2.5 占位插入（P1-12 并发语义：唯一索引防并发重复执行业务）
+        if not _db_reserve(biz_key, user_id, request.method, request.url.path, body_hash):
+            # 唯一冲突：并发占用或已完成 → 轮询回查首个请求结果（最长 ~3s）
+            logger.info("幂等占用冲突，等待首个请求完成: %s", biz_key)
+            for _ in range(30):
+                time.sleep(0.1)
+                existing = _db_lookup(biz_key)
+                if existing is not None:
+                    return existing
+            # 并发等待超时：返回 4091（HTTP 409）提示重试，不抛异常（BaseHTTPMiddleware
+            # 抛异常不经过 FastAPI 异常处理器，会直接冒泡成客户端异常）
+            logger.warning("幂等并发等待超时（biz_key=%s），返回冲突", biz_key)
+            return Response(
+                content=json.dumps(
+                    {"code": 4091, "message": "请求处理中，请稍后重试", "data": None},
+                    ensure_ascii=False,
+                ).encode("utf-8"),
+                status_code=409,
+                media_type="application/json",
+            )
+
         # 3. 首次处理：执行请求、缓冲响应体
         response = await call_next(request)
         if response.status_code >= 500:
+            # 业务异常：释放占位（允许后续重试），不缓存失败响应
+            _db_release(biz_key)
             return response
         body_iterator = getattr(response, "body_iterator", None)  # pyright: ignore[reportUnknownMemberType]
         if body_iterator is None:
@@ -186,10 +244,10 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             logger.warning("幂等：读取响应体失败，跳过缓存")
             return response
 
-        # 4. 写入 MySQL 幂等记录（首次成功即落库，唯一索引防并发重复）
+        # 4. 回填 MySQL 幂等记录（占位 → 完成；后续同键请求直接返回首次结果）
         try:
-            _db_insert(biz_key, user_id, request.method, request.url.path,
-                       body_hash, response.status_code, _serialize(response.status_code, response.media_type, body))
+            _db_complete(biz_key, response.status_code,
+                         _serialize(response.status_code, response.media_type, body))
             # Redis 缓存
             try:
                 redis_client.set(cache_key, _serialize(
@@ -197,14 +255,8 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                     ex=settings.IDEMPOTENCY_EXPIRE_SECONDS)
             except Exception:  # noqa: BLE001
                 logger.warning("幂等 Redis 缓存写入失败（MySQL 已兜底）")
-        except Exception:  # noqa: BLE001
-            # MySQL 写入失败（如并发唯一键冲突）→ 查一次已落库结果返回
-            logger.warning("幂等 MySQL 写入失败，回查唯一键")
-            existing = _db_lookup(biz_key)
-            if existing is not None:
-                return existing
-            # 均失败：记录告警并放行本次（不阻塞业务；正确性由唯一索引在后续请求兜底）
-            logger.error("幂等记录落库失败（biz_key=%s），本次请求正常处理", biz_key)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("幂等记录回填失败（biz_key=%s）: %s", biz_key, exc)
 
         # 用已缓冲的 body 重建响应
         return Response(

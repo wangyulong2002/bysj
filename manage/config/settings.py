@@ -10,6 +10,7 @@ Django settings for config project.
 """
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pymysql  # noqa: E402
 
@@ -36,12 +37,54 @@ def _load_dotenv():
 
 _ENV = _load_dotenv()
 
-SECRET_KEY = _ENV.get("DJANGO_SECRET_KEY", "django-insecure-4h&86@))7zui729*f7tg(=)%gggv(jta84&9z0&_t3s@")
+# ===== 统一对外地址（唯一地址源：与 FastAPI / 前端构建共用根 .env，见设计 9.3/9.4）=====
+PUBLIC_BASE_URL = _ENV.get("PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = _ENV.get("DEBUG", "true").lower() == "true"
+DEBUG = _ENV.get("DJANGO_DEBUG", _ENV.get("DEBUG", "true")).lower() == "true"
 
-ALLOWED_HOSTS = _ENV.get("DJANGO_ALLOWED_HOSTS", "*").split(",")
+# SECRET_KEY：生产（DEBUG=false）必须显式配置 DJANGO_SECRET_KEY，杜绝默认密钥上线（9.3）
+DJANGO_SECRET_KEY = _ENV.get("DJANGO_SECRET_KEY", "").strip()
+if DJANGO_SECRET_KEY:
+    SECRET_KEY = DJANGO_SECRET_KEY
+else:
+    SECRET_KEY = "django-insecure-4h&86@))7zui729*f7tg(=)%gggv(jta84&9z0&_t3s@)"
+    if not DEBUG:
+        from django.core.exceptions import ImproperlyConfigured
+
+        raise ImproperlyConfigured(
+            "生产环境（DEBUG=false）必须配置 DJANGO_SECRET_KEY（bysj/.env，参考 .env.example）"
+        )
+
+# ALLOWED_HOSTS：优先 DJANGO_ALLOWED_HOSTS（逗号分隔）；缺省从 PUBLIC_BASE_URL 推导 host；再缺省 *
+_allowed_hosts = _ENV.get("DJANGO_ALLOWED_HOSTS", "").strip()
+if _allowed_hosts:
+    ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts.split(",") if h.strip()]
+else:
+    _public_host = urlparse(PUBLIC_BASE_URL).hostname
+    ALLOWED_HOSTS = [_public_host] if _public_host else ["*"]
+
+# CSRF 信任来源（P1-9 收敛后 /admin/api/** 走 JWT，此处主要覆盖 Session/模板页场景）：
+# 生产 HTTPS 反代（Nginx 443 → Django http）必须正确，否则 POST 返回 403。
+_trusted_origins = _ENV.get("DJANGO_CSRF_TRUSTED_ORIGINS", "").strip()
+if _trusted_origins:
+    CSRF_TRUSTED_ORIGINS = [o.strip() for o in _trusted_origins.split(",") if o.strip()]
+else:
+    _public = urlparse(PUBLIC_BASE_URL)
+    CSRF_TRUSTED_ORIGINS = (
+        [f"{_public.scheme}://{_public.netloc}"]
+        if _public.scheme in ("http", "https") and _public.netloc
+        else []
+    )
+
+# HTTPS 反代支持（设计 9.4：Nginx 443 终止 TLS → http 转发给 Django）：
+# PUBLIC_BASE_URL 为 https 时自动启用，保证 request.is_secure() 与绝对 URL 正确。
+if PUBLIC_BASE_URL.startswith("https://"):
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    USE_X_FORWARDED_HOST = True
+
+# Django 对外地址（预留：Django 端生成绝对 URL 时使用；缺省留空）
+DJANGO_BASE_URL = _ENV.get("DJANGO_BASE_URL", "").rstrip("/")
 
 # Application definition
 

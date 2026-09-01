@@ -3,7 +3,7 @@
 验证内容：
 1. 同一 ARK_API_KEY 下生成（deepseek-chat）与 embedding（doubao-embedding）可调用；
 2. 实测向量维度与 EMB_DIM 一致性校验（不一致 fail-fast）；
-3. 写入 2 条测试 chunk 后 KNN 往返命中（DIM=2560、COSINE）；
+3. 写入 2 条测试 chunk 后 KNN 往返命中（DIM=EMB_DIM=2048、COSINE）；
 4. BM25 标题词命中（中文单字召回，见 vector_store 实现约定）；
 5. LLM 双通道兜底（v2.7/ADR-013）：主通道不可用时自动切 Agnes。
 
@@ -36,7 +36,7 @@ def main() -> int:
         content, usage = chat_completion([
             {"role": "system", "content": "你是校园助手，只回答测试问题。"},
             {"role": "user", "content": "回复两个字：正常"},
-        ], max_tokens=64)
+        ], max_tokens=settings.LLM_MAX_TOKENS)  # 推理模型需给足预算（reasoning 会先占 token）
         ok = bool(content.strip())
         all_ok &= check("chat_completion 生成可用", ok, f"model={usage['model']} content={content.strip()[:20]!r}")
         if usage.get("model") != settings.LLM_MODEL:
@@ -79,11 +79,13 @@ def main() -> int:
     all_ok &= check("KNN 距离 ∈ [0,2]（余弦距离）", top_dist is not None and -1e-6 <= top_dist <= 2.0,
                     f"dist={top_dist}")
 
-    bm25 = vector_store.bm25_search(["食", "堂", "窗"], k=2)
+    # k 取较大值：索引中已有真实文档时，BM25 同分文档排序不稳定，
+    # 小 k 会把测试 chunk 挤出前 N 导致断言误报（2026-08-31 实测）
+    bm25 = vector_store.bm25_search(["食", "堂", "窗"], k=6)
     bm25_ids = [cid for cid, _s in bm25]
     all_ok &= check("BM25 标题词命中（食堂窗口）", SMOKE_CHUNK_IDS[0] in bm25_ids and SMOKE_CHUNK_IDS[1] not in bm25_ids,
                     f"hits={bm25_ids}")
-    bm25_2 = vector_store.bm25_search(["宿", "舍"], k=2)
+    bm25_2 = vector_store.bm25_search(["宿", "舍"], k=6)
     all_ok &= check("BM25 标题词命中（宿舍）", SMOKE_CHUNK_IDS[1] in [cid for cid, _s in bm25_2])
 
     stats = vector_store.index_stats()
@@ -99,7 +101,7 @@ def main() -> int:
         try:
             content2, usage2 = chat_completion([
                 {"role": "user", "content": "回复两个字：兜底"}
-            ], max_tokens=64)
+            ], max_tokens=settings.LLM_MAX_TOKENS)
             all_ok &= check("主通道失败自动切 Agnes", bool(content2.strip()) and usage2["model"] == settings.AGNES_MODEL,
                             f"model={usage2['model']} content={content2.strip()[:20]!r}")
         except Exception as exc:  # noqa: BLE001
