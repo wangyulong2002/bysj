@@ -74,9 +74,13 @@ SYSTEM_PROMPT = (
     "5. 用简洁的中文回答。\n"
 )
 
+# 弱相关档（RAG专项测试报告 §5.2 修复）：消除"暂无相关信息 / [[NO_ANSWER]]"
+# 双出口——资料不足时**只**输出哨兵 [[NO_ANSWER]]，由接口层统一转 no_context
+# 拒答契约（L3 另对正常档遗漏的"暂无相关信息"类文本做后处理兜底）。
 SYSTEM_PROMPT_LOW_CONFIDENCE = SYSTEM_PROMPT + (
     "6. 本次检索资料与问题相关性较低：如果资料不足以回答问题，"
-    "只输出 [[NO_ANSWER]]，不要拼凑答案。\n"
+    "只输出 [[NO_ANSWER]]；不要输出“暂无相关信息”“暂无相关资料”等文字，"
+    "也不要拼凑答案。\n"
 )
 
 
@@ -191,7 +195,46 @@ def _load_history(session_id: str | None, limit: int = 3) -> list[dict]:
     return messages
 
 
+def _rewrite_query(question: str, history: list[dict]) -> str:
+    """多轮检索前问题改写（RAG专项测试报告 §5.3 修复，8.1 加分项/8.5）。
+
+    指代类追问（如"那它周末也开放吗？"）单独向量化相似度极低，必然被 L1 拦截；
+    规则式改写：拼上最近一轮用户问题（"图书馆几点开门？，那它周末也开放吗"）
+    后再向量化/BM25，让历史参与检索。仅用于检索，生成 Prompt 仍用原始问题
+    （历史已按 _build_messages 注入），不增加 LLM 调用。
+    """
+    if len(history) >= 2 and history[-2]["role"] == "user":
+        last_user = history[-2]["content"]
+        if last_user:
+            return f"{last_user}，{question}"
+    return question
+
+
 _CITATION_RE = re.compile(r"\[(\d+)\]")
+
+# L3 后处理（RAG专项测试报告 §5.2 修复）：LLM 按系统提示输出"暂无相关信息"
+# 但未输出 [[NO_ANSWER]] 哨兵时的等价拒答文本（整段仅含该短语才判拒答）。
+_NO_ANSWER_PHRASES = (
+    "暂无相关信息", "暂无相关资料", "暂无该信息", "没有找到相关资料",
+    "没有相关信息", "未找到相关资料", "目前没有相关信息",
+)
+
+
+def _looks_like_no_answer(answer: str) -> bool:
+    """L3：清洗后答案是否仅由"暂无相关(信息/资料)"类短语构成 → 视为无资料拒答。
+
+    判定三条件（全部满足才命中，避免误伤正常回答）：
+    1. 去除引用编号与句末标点后，含"暂无相关信息/暂无相关资料"等拒答短语；
+    2. 整段 ≤30 字（不带长说明）；
+    3. 不含逗号/顿号/分号（出现分隔符说明还有补充内容，如
+       "暂无相关信息，建议咨询教务处"，不应整段转拒答）。
+    """
+    cleaned = _CITATION_RE.sub("", answer or "").strip().strip("。！!？?；;…")
+    if not cleaned or len(cleaned) > 30:
+        return False
+    if any(c in cleaned for c in "，、；,;"):
+        return False
+    return any(p in cleaned for p in _NO_ANSWER_PHRASES)
 
 
 def _extract_citations(answer: str, top_n: int) -> set[int]:
@@ -327,15 +370,19 @@ def rag_chat(body: ChatRequest, request: Request) -> dict:
         raise VectorUnavailableError("AI 助手暂不可用，请稍后再试") from exc
 
     try:
-        chunks, best_sim, hit_count = hybrid_search(question, q_vec)
+        chunks, best_sim, hit_count, bm25_top_rank = hybrid_search(question, q_vec)
     except BizError:
         raise
     except Exception as exc:  # noqa: BLE001 —— 索引/Redis 故障一律 5002，不做假检索
         logger.warning("混合检索失败: %s", exc)
         raise VectorUnavailableError("AI 助手暂不可用，请稍后再试") from exc
 
-    # 5. L1 相关度闸门（核心）：三档分流（阈值读 .env，禁止硬编码）
-    if hit_count == 0 or best_sim < settings.RAG_SCORE_LOW:
+    # 5. L1 相关度闸门（核心）：三档分流（阈值读 .env，禁止硬编码）。
+    # BM25 专有名词兜底豁免（8.4/§5.1）：内容级细节提问（"XX 宿舍…几点…"）
+    # KNN 相似度可能低于 LOW 但 BM25 对标题强命中——此类不判 no_context，
+    # 转弱相关档调 LLM，修复"明明有资料却被误拒"。
+    bm25_exempt = bm25_top_rank is not None and bm25_top_rank <= settings.RAG_BM25_GATE_RANK
+    if hit_count == 0 or (best_sim < settings.RAG_SCORE_LOW and not bm25_exempt):
         return _log_and_refuse("no_context", hit_count_for_log=hit_count)
     low_confidence = best_sim < settings.RAG_SCORE_HIGH
 
@@ -384,6 +431,11 @@ def rag_chat(body: ChatRequest, request: Request) -> dict:
     if scope_keywords.answer_sensitive(answer):
         logger.warning("RAG 答案触发敏感过滤（L3），已拒答并记审计：ip=%s", _hash_ip(ip))
         return _log_and_refuse("unsafe", model=usage.get("model", ""),
+                               hit_count_for_log=hit_count)
+    # L3 后处理（§5.2 修复）：LLM 输出"暂无相关信息"等价文本但未带哨兵 →
+    # 统一转 no_context 拒答契约（refused=true），保证拒答率统计口径一致
+    if _looks_like_no_answer(answer):
+        return _log_and_refuse("no_context", model=usage.get("model", ""),
                                hit_count_for_log=hit_count)
 
     # 弱相关仍作答：附完整性提示（8.4.1：不算拒答）
@@ -456,22 +508,26 @@ def rag_chat_stream(body: ChatRequest, request: Request):
 
     # 混合检索 + L1 相关度闸门（首帧前完成）
     if refusal_reason is None:
+        history = _load_history(body.session_id)   # T7-8 多轮上下文（先取，供检索改写）
+        # §5.3 修复：指代类追问用"上一轮问题 + 当前问题"改写后再检索
+        retrieval_query = _rewrite_query(question, history)
         try:
-            q_vec = embed_query(question)
+            q_vec = embed_query(retrieval_query)
         except Exception as exc:  # noqa: BLE001
             raise VectorUnavailableError("AI 助手暂不可用，请稍后再试") from exc
         try:
-            chunks, best_sim, hit_count = hybrid_search(question, q_vec)
+            chunks, best_sim, hit_count, bm25_top_rank = hybrid_search(retrieval_query, q_vec)
         except BizError:
             raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("混合检索失败(流式): %s", exc)
             raise VectorUnavailableError("AI 助手暂不可用，请稍后再试") from exc
-        if hit_count == 0 or best_sim < settings.RAG_SCORE_LOW:
+        # L1 三档分流 + BM25 专有名词兜底豁免（8.4/§5.1，与 /chat 一致）
+        bm25_exempt = bm25_top_rank is not None and bm25_top_rank <= settings.RAG_BM25_GATE_RANK
+        if hit_count == 0 or (best_sim < settings.RAG_SCORE_LOW and not bm25_exempt):
             refusal_reason = "no_context"
         else:
             low_confidence = best_sim < settings.RAG_SCORE_HIGH
-            history = _load_history(body.session_id)  # T7-8 多轮上下文
             messages = _build_messages(question, chunks, low_confidence, history)
 
     def _cost() -> int:
@@ -573,6 +629,18 @@ def rag_chat_stream(body: ChatRequest, request: Request):
                 cost_time_ms=_cost(), ip=ip, refuse_reason="unsafe",
             )
             yield _refuse_done("unsafe", usage.get("model", ""), log_id)
+            return
+        # L3 后处理（§5.2 修复）：流式文本为"暂无相关信息"等价拒答 → no_context
+        if _looks_like_no_answer(final):
+            log_id = _write_log(
+                session_id=body.session_id, question=question,
+                answer=REFUSE_TEMPLATES["no_context"], ref_ids=[],
+                hit_count=hit_count, model=usage.get("model", ""),
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                cost_time_ms=_cost(), ip=ip, refuse_reason="no_context",
+            )
+            yield _refuse_done("no_context", usage.get("model", ""), log_id)
             return
         if low_confidence:
             final = final.rstrip() + LOW_CONFIDENCE_HINT

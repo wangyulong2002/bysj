@@ -86,19 +86,20 @@ class _StreamLLM:
         return gen()
 
 
-def _mock_retrieval(monkeypatch, chunks=None, best_sim=0.9):
+def _mock_retrieval(monkeypatch, chunks=None, best_sim=0.9, bm25_top_rank=None):
     from app.rag import retriever as retriever_mod
 
     chunks = [_chunk()] if chunks is None else chunks
 
     def fake_hybrid(question, q_vec, knn_k=None, top_n=None):
-        return list(chunks), best_sim, len(chunks)
+        return list(chunks), best_sim, len(chunks), bm25_top_rank
 
     def fake_embed(q):
         return b"\x00" * 4
 
     monkeypatch.setattr("app.api.rag_chat.hybrid_search", fake_hybrid)
     monkeypatch.setattr("app.api.rag_chat.embed_query", fake_embed)
+    return fake_hybrid
 
 
 def _post_stream(client, question, session_id=None):
@@ -335,3 +336,30 @@ def test_stream_no_session_no_history(client, monkeypatch):
     messages = llm.calls[0]
     assert len(messages) == 2
     assert messages[0]["role"] == "system" and messages[1]["role"] == "user"
+
+
+def test_stream_multi_turn_retrieval_rewritten(client, monkeypatch):
+    """§5.3 修复：指代类追问检索前改写为"上一轮问题 + 当前问题"；
+    生成 Prompt 仍用原始问题（历史已注入），不改变多轮消息结构。"""
+    llm = _StreamLLM()
+    monkeypatch.setattr("app.api.rag_chat.chat_completion_stream", llm)
+    fake = _mock_retrieval(monkeypatch)
+    captured: dict = {}
+    def _spy(question, *a, **kw):
+        captured["q"] = question
+        return fake(question, *a, **kw)
+    monkeypatch.setattr("app.api.rag_chat.hybrid_search", _spy)
+
+    sid = "sess-rewrite"
+    _seed_history(sid, [("图书馆几点开门？", "早8点到晚10点。")])
+
+    frames = _frames(_post_stream(client, "那它周末也开放吗？", session_id=sid))
+    _track_log_id(frames[-1])
+
+    # 检索查询已被改写（指代消解）
+    assert captured["q"] == "图书馆几点开门？，那它周末也开放吗？"
+    # 生成 Prompt 结构不变：system + 历史(user/assistant) + 最终 user
+    messages = llm.calls[0]
+    assert len(messages) == 4
+    assert messages[1]["content"] == "图书馆几点开门？"
+    assert "那它周末也开放吗？" in messages[-1]["content"]

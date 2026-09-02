@@ -70,11 +70,11 @@ class _LLM:
                              "prompt_tokens": 100, "completion_tokens": 20}
 
 
-def _mock_retrieval(monkeypatch, chunks, best_sim):
+def _mock_retrieval(monkeypatch, chunks, best_sim, bm25_top_rank=None):
     from app.rag import retriever as retriever_mod
 
     def fake_hybrid(question, q_vec, knn_k=None, top_n=None):
-        return list(chunks), best_sim, len(chunks)
+        return list(chunks), best_sim, len(chunks), bm25_top_rank
 
     def fake_embed(q):
         return b"\x00" * 4
@@ -143,7 +143,7 @@ def test_l0_out_of_scope_no_llm_no_retrieval(client, monkeypatch):
 
     def fake_hybrid(*a, **kw):
         called["hybrid"] = True
-        return [], 0.0, 0
+        return [], 0.0, 0, None
     monkeypatch.setattr("app.api.rag_chat.hybrid_search", fake_hybrid)
 
     body = _post(client, "帮我写代码实现一个爬虫")
@@ -200,6 +200,31 @@ def test_l1_no_hits(client, monkeypatch):
     _track_log_id(body["data"])
     assert body["data"]["refuse_reason"] == "no_context"
     assert len(llm.calls) == 0
+
+
+def test_l1_bm25_hit_exempts_low_sim(client, monkeypatch):
+    """BM25 专有名词兜底豁免（8.4/§5.1）：best_sim < LOW 但 BM25 强命中
+    （融合排名 ≤ RAG_BM25_GATE_RANK）→ 不误拒，转弱相关档调 LLM。"""
+    llm = _LLM()
+    monkeypatch.setattr("app.api.rag_chat.chat_completion", llm)
+    _mock_retrieval(monkeypatch, [_chunk(sim=0.2)], 0.2, bm25_top_rank=1)
+    body = _post(client, "宿舍热水供应到晚上几点")
+    _track_log_id(body["data"])
+    assert body["data"]["refused"] is False
+    assert "资料可能不完整" in body["data"]["answer"]
+    assert len(llm.calls) == 1
+    # 低置信档提示词：资料不足只输出哨兵（§5.2 单出口）
+    assert "[[NO_ANSWER]]" in llm.calls[0][0]["content"]
+    assert "不要输出“暂无相关信息”" in llm.calls[0][0]["content"]
+
+
+def test_l1_bm25_rank_over_threshold_still_refused(client, monkeypatch):
+    """BM25 命中排名超阈值（> RAG_BM25_GATE_RANK）不豁免 → 仍拒答 no_context。"""
+    monkeypatch.setattr("app.api.rag_chat.chat_completion", _LLM())
+    _mock_retrieval(monkeypatch, [_chunk(sim=0.2)], 0.2, bm25_top_rank=9)
+    body = _post(client, "量子力学入门教材推荐")
+    _track_log_id(body["data"])
+    assert body["data"]["refuse_reason"] == "no_context"
 
 
 def test_l1_low_confidence_appends_hint(client, monkeypatch):
@@ -312,6 +337,30 @@ def test_l3_sensitive_answer_refused_unsafe(client, monkeypatch):
     body = _post(client, "有什么好玩的")
     _track_log_id(body["data"])
     assert body["data"]["refuse_reason"] == "unsafe"
+
+
+def test_l3_no_answer_phrase_refused_no_context(client, monkeypatch):
+    """L3 后处理（§5.2）：LLM 输出"暂无相关信息"但未带 [[NO_ANSWER]] 哨兵 →
+    统一转 no_context 拒答契约（refused=true），拒答率口径一致。"""
+    llm = _LLM(answer="暂无相关信息")
+    monkeypatch.setattr("app.api.rag_chat.chat_completion", llm)
+    _mock_retrieval(monkeypatch, [_chunk()], 0.9)
+    body = _post(client, "学校毕业生就业率是多少")
+    _track_log_id(body["data"])
+    assert body["data"]["refused"] is True
+    assert body["data"]["refuse_reason"] == "no_context"
+    assert body["data"]["answer"].startswith("暂时没有")
+
+
+def test_l3_no_answer_phrase_with_suffix_not_refused(client, monkeypatch):
+    """带补充说明的长句（含分隔符）不算整段拒答 → 正常作答（不误伤）。"""
+    llm = _LLM(answer="暂无相关信息，建议咨询教务处获取权威数据[1]。")
+    monkeypatch.setattr("app.api.rag_chat.chat_completion", llm)
+    _mock_retrieval(monkeypatch, [_chunk()], 0.9)
+    body = _post(client, "学校毕业生就业率是多少")
+    _track_log_id(body["data"])
+    assert body["data"]["refused"] is False
+    assert body["data"]["refuse_reason"] is None
 
 
 # ===== 引用来源映射（6.3.6）=====

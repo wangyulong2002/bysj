@@ -16,6 +16,7 @@
   单字 OR 组合——SCHEMA 字段集不变，属索引内容预处理实现约定。
 """
 import logging
+import os
 
 import redis  # pyright: ignore[reportMissingImports]
 from redis.exceptions import ResponseError
@@ -37,17 +38,43 @@ binary_redis: redis.Redis = redis.Redis.from_url(
     socket_connect_timeout=5,
 )
 
-_FT_CREATE_DDL = [
-    "FT.CREATE", INDEX_NAME, "ON", "HASH", "PREFIX", "1", KEY_PREFIX,
-    "SCHEMA",
-    "source_type", "TAG",
-    "source_id", "NUMERIC", "SORTABLE",
-    "title", "TEXT",
-    "chunk_index", "NUMERIC",
-    "embedding", "VECTOR", "HNSW", "6",
-    "TYPE", "FLOAT32", "DIM", str(settings.EMB_DIM),
-    "DISTANCE_METRIC", "COSINE",
-]
+def _require_isolated_db() -> None:
+    """测试隔离护栏（RAG专项测试报告 §5.6 事故修复，P0）。
+
+    仅测试进程（`RAG_TEST_ISOLATION=1`，conftest 设置）生效：
+    禁止对**生产索引命名空间**（`rag_idx` / `rag:chunk:`）执行任何
+    索引写/删除类操作，避免"跑单测清空线上索引"。
+    - RediSearch 不支持 db≠0（模块限制），故采用命名空间隔离；
+    - conftest 会将 INDEX_NAME/KEY_PREFIX 打上 `_test` 后缀；
+    - 生产环境未设置该标记，不受影响。
+    """
+    if os.environ.get("RAG_TEST_ISOLATION") != "1":
+        return
+    if INDEX_NAME == "rag_idx" or KEY_PREFIX == "rag:chunk:":
+        raise RuntimeError(
+            "RAG 单测禁止操作生产索引命名空间（rag_idx / rag:chunk:）："
+            "请由 tests/conftest.py 打上测试命名空间（rag_idx_test / rag:chunk:test:）后重跑"
+        )
+
+
+def _ft_create_ddl() -> list:
+    """索引创建 DDL（8.2 权威字段，**调用时动态构建**）。
+
+    不落模块级常量：测试环境由 conftest 改写 INDEX_NAME/KEY_PREFIX 后，
+    此处引用的是改后的值（否则 ensure_index 会误建/误操作生产索引
+    `rag_idx`，RAG专项测试报告 §5.6 事故同类风险）。
+    """
+    return [
+        "FT.CREATE", INDEX_NAME, "ON", "HASH", "PREFIX", "1", KEY_PREFIX,
+        "SCHEMA",
+        "source_type", "TAG",
+        "source_id", "NUMERIC", "SORTABLE",
+        "title", "TEXT",
+        "chunk_index", "NUMERIC",
+        "embedding", "VECTOR", "HNSW", "6",
+        "TYPE", "FLOAT32", "DIM", str(settings.EMB_DIM),
+        "DISTANCE_METRIC", "COSINE",
+    ]
 
 
 def _index_exists() -> bool:
@@ -69,13 +96,14 @@ def ensure_index() -> bool:
     """
     if _index_exists():
         return False
-    binary_redis.execute_command(*_FT_CREATE_DDL)
+    binary_redis.execute_command(*_ft_create_ddl())
     logger.info("RediSearch 索引 %s 创建成功 (DIM=%s, COSINE)", INDEX_NAME, settings.EMB_DIM)
     return True
 
 
 def drop_index() -> None:
     """删除索引但保留 hash 文档（全量重建由调用方另行清理 key）。"""
+    _require_isolated_db()
     try:
         binary_redis.execute_command("FT.DROPINDEX", INDEX_NAME)
     except ResponseError as exc:
@@ -153,6 +181,7 @@ def upsert_chunks(chunks: list[dict]) -> int:
         chunks: [{id, source_type(1|2 str), source_id(int), title(str),
                   chunk_index(int), embedding(float32 bytes)}]
     """
+    _require_isolated_db()
     pipe = binary_redis.pipeline(transaction=False)
     for c in chunks:
         key = f"{KEY_PREFIX}{c['id']}"
@@ -232,6 +261,7 @@ def bm25_search(keywords: list[str], k: int | None = None) -> list[tuple[int, fl
 
 def delete_chunk_keys(chunk_ids: list[int]) -> int:
     """删除 chunk 对应的 Redis key（旧版本清理 / delete 任务）。"""
+    _require_isolated_db()
     if not chunk_ids:
         return 0
     keys = [f"{KEY_PREFIX}{cid}" for cid in chunk_ids]
@@ -240,6 +270,7 @@ def delete_chunk_keys(chunk_ids: list[int]) -> int:
 
 def scan_chunk_keys() -> list[str]:
     """扫描全部 rag:chunk:* key（全量重建前清理残留）。"""
+    _require_isolated_db()
     keys: list[str] = []
     cursor = 0
     while True:

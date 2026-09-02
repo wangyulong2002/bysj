@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # 检索相关度三档阈值（v2.6/8.4.1，由 T7-7 标定，禁止硬编码到业务代码）
     RAG_SCORE_HIGH: float = 0.75
     RAG_SCORE_LOW: float = 0.45
+    # L1 BM25 专有名词兜底豁免档位（8.4：BM25 兜底"XX 宿舍/教授姓名"类专有名词；
+    # 融合结果中 BM25 命中排名 ≤ 该值且 best_sim 仍低于 LOW 时，不判 no_context，
+    # 转弱相关档调 LLM——修复"内容级细节提问被 L1 误拒"（RAG专项测试报告 §5.1））
+    RAG_BM25_GATE_RANK: int = 3
     # 领域围栏开关（v2.6/8.4.1：1 启用 L0 规则闸门 + L2 领域围栏；0 仅保留 L1）
     RAG_STRICT_DOMAIN: int = 1
     # Worker 开关（测试环境置 0，避免 TestClient 拉起后台调度）

@@ -166,7 +166,7 @@ def test_upsert_creates_chunks_and_vectors(monkeypatch):
     assert chunks[0][4] == "第一食堂风味窗口指南"     # 标题元数据
     assert chunks[0][5] == f"/api/announcements/{ANN_ID}"  # url 规则
     for c in chunks:
-        assert vector_store.binary_redis.exists(f"rag:chunk:{c[0]}")
+        assert vector_store.binary_redis.exists(f"{vector_store.KEY_PREFIX}{c[0]}")
 
     # KNN 往返：同文本向量检索命中自身 chunk
     q_vec = _fake_vec(abs(hash(f"第一食堂风味窗口指南\n{chunks[0][3]}")))
@@ -194,8 +194,9 @@ def test_upsert_new_version_removes_old_chunks(monkeypatch):
     new_chunks = _chunk_rows("1", ANN_ID)
     assert {c[1] for c in new_chunks} == {2}
     for cid in old_ids:
-        assert not vector_store.binary_redis.exists(f"rag:chunk:{cid}")
-    assert all(vector_store.binary_redis.exists(f"rag:chunk:{c[0]}") for c in new_chunks)
+        assert not vector_store.binary_redis.exists(f"{vector_store.KEY_PREFIX}{cid}")
+    assert all(vector_store.binary_redis.exists(f"{vector_store.KEY_PREFIX}{c[0]}")
+               for c in new_chunks)
 
 
 def test_upsert_missing_source_cleans_and_succeeds(monkeypatch):
@@ -221,7 +222,7 @@ def test_delete_task_removes_chunks(monkeypatch):
     assert _task_row(del_task)[1] == "2"
     assert _chunk_rows("2", KNOW_ID) == []
     for cid in chunk_ids:
-        assert not vector_store.binary_redis.exists(f"rag:chunk:{cid}")
+        assert not vector_store.binary_redis.exists(f"{vector_store.KEY_PREFIX}{cid}")
 
 
 def test_knowledge_html_stripped_before_chunking(monkeypatch):

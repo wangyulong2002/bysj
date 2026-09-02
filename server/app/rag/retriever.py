@@ -71,24 +71,30 @@ def extract_keywords(question: str) -> list[str]:
 
 def rrf_fuse(knn_hits: list[tuple[int, float]],
              bm25_hits: list[tuple[int, float]],
-             top_n: int | None = None) -> list[tuple[int, float, float | None]]:
+             top_n: int | None = None) -> list[tuple[int, float, float | None, int | None]]:
     """RRF 融合两路召回：score = Σ 1/(60 + rank_i)，同 chunk 两路命中得分相加。
 
     Returns:
-        [(chunk_id, rrf_score, sim)] 按 rrf_score 降序，截取 Top-N；
-        sim = KNN 路的余弦相似度（该 chunk 未被 KNN 命中时为 None）。
+        [(chunk_id, rrf_score, sim, bm25_rank)] 按 rrf_score 降序，截取 Top-N；
+        sim = KNN 路的余弦相似度（该 chunk 未被 KNN 命中时为 None）；
+        bm25_rank = 该 chunk 在 BM25 路内的命中排名（1 起，未命中为 None）——
+        供 L1 闸门做"专有名词兜底豁免"（8.4：BM25 兜底'XX 宿舍/教授姓名'，
+        该场景 KNN 相似度可能很低但 BM25 强命中，不应被 L1 误拒）。
     """
     n = top_n or settings.RAG_TOP_N
     scores: dict[int, float] = {}
     sims: dict[int, float | None] = {}
+    bm25_ranks: dict[int, int | None] = {}
     for rank, (cid, dist) in enumerate(knn_hits, start=1):
         scores[cid] = scores.get(cid, 0.0) + 1.0 / (RRF_CONSTANT + rank)
         sims[cid] = 1.0 - dist  # cosine_distance → 相似度
+        bm25_ranks[cid] = None
     for rank, (cid, _score) in enumerate(bm25_hits, start=1):
         scores[cid] = scores.get(cid, 0.0) + 1.0 / (RRF_CONSTANT + rank)
         sims.setdefault(cid, None)
+        bm25_ranks.setdefault(cid, rank)
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:n]
-    return [(cid, score, sims.get(cid)) for cid, score in ranked]
+    return [(cid, score, sims.get(cid), bm25_ranks.get(cid)) for cid, score in ranked]
 
 
 def fetch_chunks_meta(chunk_ids: list[int]) -> dict[int, dict]:
@@ -118,7 +124,7 @@ def fetch_chunks_meta(chunk_ids: list[int]) -> dict[int, dict]:
 
 def hybrid_search(question: str, q_vec: bytes,
                   knn_k: int | None = None,
-                  top_n: int | None = None) -> tuple[list[RetrievedChunk], float, int]:
+                  top_n: int | None = None) -> tuple[list[RetrievedChunk], float, int, int | None]:
     """混合检索 + RRF（8.4）：KNN Top-K ∪ BM25 Top-K → 融合取 Top-N。
 
     Args:
@@ -126,27 +132,32 @@ def hybrid_search(question: str, q_vec: bytes,
         q_vec: 问题向量（float32 bytes，调用方经 embedding.embed_query 生成）。
 
     Returns:
-        (chunks, best_sim, hit_count)：
+        (chunks, best_sim, hit_count, bm25_top_rank)：
         - chunks：融合 Top-N（含 MySQL 元数据）；
         - best_sim = 1 - min(cosine_distance)（KNN 路最高相似度，L1 闸门判据；
           KNN 无命中时为 0.0）；
-        - hit_count：融合后命中片段数（≤ Top-N）。
+        - hit_count：融合后命中片段数（≤ Top-N）；
+        - bm25_top_rank：融合 Top-N 中 BM25 路命中最佳排名（1 起，无 BM25
+          命中为 None）——L1 专有名词兜底豁免判据（8.4）。
     """
     knn_hits = vector_store.knn_search(q_vec, k=knn_k or settings.RAG_KNN_K)
     bm25_hits = vector_store.bm25_search(extract_keywords(question), k=settings.RAG_KNN_K)
     best_sim = max((1.0 - dist for _cid, dist in knn_hits), default=0.0)
 
     fused = rrf_fuse(knn_hits, bm25_hits, top_n=top_n)
-    meta = fetch_chunks_meta([cid for cid, _s, _sim in fused])
+    bm25_top_rank = min(
+        (br for _cid, _s, _sim, br in fused if br is not None), default=None
+    )
+    meta = fetch_chunks_meta([cid for cid, _s, _sim, _br in fused])
     chunks: list[RetrievedChunk] = []
-    for cid, score, sim in fused:
+    for cid, score, sim, _br in fused:
         m = meta.get(cid)
         if m is None:  # MySQL 无对应已向量化 chunk（脏数据），跳过
             continue
         chunks.append(RetrievedChunk(
             chunk_id=cid, score=round(score, 6), sim=sim, **m,
         ))
-    return chunks, best_sim, len(chunks)
+    return chunks, best_sim, len(chunks), bm25_top_rank
 
 
 # ===== LangChain Retriever（8.2：自定义 Retriever，不用内置 VectorStore 抽象）=====
@@ -172,7 +183,7 @@ try:  # langchain 为 RAG 编排依赖（8.2），缺失时核心检索仍可用
             from app.services.embedding import embed_query
 
             q_vec = embed_query(query)
-            chunks, _best, _hit = hybrid_search(
+            chunks, _best, _hit, _bm25 = hybrid_search(
                 query, q_vec, knn_k=self.knn_k, top_n=self.top_n
             )
             return [
