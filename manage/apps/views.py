@@ -86,7 +86,7 @@ class IsAdminRole:
 
     def has_object_permission(self, request, view, obj) -> bool:
         """对象级权限：queryset 已按逻辑删除过滤，admin 角色即可访问。"""
-        # 对象级权限：queryset 已按逻辑删除过滤，admin 角色即可访问
+       
         return self.has_permission(request, view)
 
 
