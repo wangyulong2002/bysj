@@ -330,6 +330,53 @@ def run_round() -> dict:
     return {"recovered": recovered, "processed": processed, "failed": failed}
 
 
+# ===== 分布式守卫（P1-14）=====
+
+#: 单轮调度锁 TTL：略小于轮间隔，持锁实例崩溃后最多等一轮即可恢复执行
+ROUND_LOCK_TTL_SECONDS = ROUND_INTERVAL_SECONDS * 2 - 5
+
+
+def _round_lock_key() -> str:
+    """调度锁键（P1-14）。
+
+    自动跟随 `vector_store` 的测试命名空间后缀（`_test`），
+    避免单测在共享 Redis 上抢占生产调度锁。
+    """
+    suffix = "_test" if vector_store.REBUILD_REQUEST_KEY.endswith("_test") else ""
+    return f"rag:worker:round_lock{suffix}"
+
+
+def _with_lock(lock_key: str, ttl_seconds: int, fn):
+    """Redis `SET NX PX` 分布式守卫（P1-14）：取不到锁则跳过本次执行。
+
+    **问题**：多副本/多 worker 部署时每个实例都会拉起调度器。任务领取本身有
+    `UPDATE ... WHERE status=0` 抢占锁（✅ 没问题），但**全量重建标记、每日日志
+    清理、崩溃恢复扫描没有分布式锁** → 重建会被触发多次。
+
+    **降级**：Redis 不可用时退回"直接执行"（单实例语义），不阻塞任务处理。
+    """
+    client = vector_store.binary_redis
+    try:
+        got = client.set(lock_key, "1", nx=True, px=ttl_seconds * 1000)
+    except Exception as exc:  # noqa: BLE001 —— Redis 故障降级为单实例执行
+        logger.warning("调度锁不可用（Redis 故障？），本次直接执行: %s", exc)
+        return fn()
+    if not got:
+        logger.debug("其他实例正在执行（lock=%s），本次跳过", lock_key)
+        return None
+    return fn()
+
+
+def run_round_guarded() -> dict | None:
+    """带分布式锁的单轮调度（P1-14）：同一时刻仅一个实例真正执行。"""
+    return _with_lock(_round_lock_key(), ROUND_LOCK_TTL_SECONDS, run_round)
+
+
+def cleanup_expired_logs_guarded() -> int | None:
+    """带分布式锁的日志清理（P1-14）：避免多实例同日重复清理。"""
+    return _with_lock(f"{_round_lock_key()}:cleanup", 22 * 3600, cleanup_expired_logs)
+
+
 def _count_failed() -> int:
     with engine.connect() as conn:
         return int(conn.execute(text(
@@ -355,7 +402,11 @@ _scheduler = None
 
 
 def start_scheduler() -> None:
-    """启动后台调度（30s 一轮 + 每日 03:30 日志清理），并幂等建索引。"""
+    """启动后台调度（30s 一轮 + 每日 03:30 日志清理），并幂等建索引。
+
+    P1-14：调度任务一律走 `*_guarded` 版本（Redis 分布式锁），
+    因此即使被多个进程同时启动，也只有拿到锁的实例会真正执行。
+    """
     global _scheduler
     if _scheduler is not None:
         return
@@ -369,12 +420,12 @@ def start_scheduler() -> None:
         logger.warning("启动时建索引失败（Redis 未就绪？）: %s", exc)
 
     _scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
-    _scheduler.add_job(run_round, IntervalTrigger(seconds=ROUND_INTERVAL_SECONDS),
+    _scheduler.add_job(run_round_guarded, IntervalTrigger(seconds=ROUND_INTERVAL_SECONDS),
                        id="rag_worker", max_instances=1, coalesce=True)
-    _scheduler.add_job(cleanup_expired_logs, CronTrigger(hour=3, minute=30),
+    _scheduler.add_job(cleanup_expired_logs_guarded, CronTrigger(hour=3, minute=30),
                        id="rag_log_cleanup", max_instances=1, coalesce=True)
     _scheduler.start()
-    logger.info("RAG Worker 调度已启动（每 %ss 一轮）", ROUND_INTERVAL_SECONDS)
+    logger.info("RAG Worker 调度已启动（每 %ss 一轮，带分布式锁）", ROUND_INTERVAL_SECONDS)
 
 
 def stop_scheduler() -> None:
@@ -384,6 +435,42 @@ def stop_scheduler() -> None:
         _scheduler.shutdown(wait=False)
         _scheduler = None
         logger.info("RAG Worker 调度已停止")
+
+
+def main() -> None:
+    """独立 Worker 进程入口（P1-14）。
+
+    用法（生产**不要**加 `--reload`）：
+
+        cd server && python -m app.rag.worker
+        # 或：make rag-worker
+
+    **为什么拆进程**：原实现把 APScheduler 跑在 Web 进程内 ——
+    ① 多副本部署时每个实例都拉起调度器（现由分布式锁兜住）；
+    ② Embedding/LLM 长任务（单轮最多 20 条）跑在 web 线程池里，与用户请求争抢资源
+       （`LLM_TIMEOUT_SECONDS=10` + 20 条/轮 ⇒ 最坏单轮占用 200 秒）；
+    ③ 服务重启即中断调度；④ 无法独立扩容。
+    """
+    import logging
+    import time as _time
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    logger.info("RAG Worker 独立进程启动（每 %ss 一轮）", ROUND_INTERVAL_SECONDS)
+    start_scheduler()
+    try:
+        while True:
+            _time.sleep(3600)
+    except KeyboardInterrupt:
+        logger.info("收到中断信号，准备停止调度")
+    finally:
+        stop_scheduler()
+
+
+if __name__ == "__main__":
+    main()
 
 
 def rag_index_health() -> dict:

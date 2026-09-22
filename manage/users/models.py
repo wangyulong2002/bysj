@@ -55,7 +55,7 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
     create_time = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
     update_by = models.BigIntegerField(blank=True, null=True, verbose_name="更新人")
     update_time = models.DateTimeField(auto_now=True, verbose_name="更新时间")
-    del_flag = models.CharField(max_length=1, default="0", verbose_name="逻辑删除：0正常 2删除")
+    del_flag = models.CharField(max_length=1, default="0", db_default="0", verbose_name="逻辑删除：0正常 2删除")
 
     USERNAME_FIELD = "username"
     REQUIRED_FIELDS: list[str] = []

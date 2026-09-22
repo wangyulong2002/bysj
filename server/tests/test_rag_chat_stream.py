@@ -155,7 +155,7 @@ def test_stream_basic_contract(client, monkeypatch):
 def test_stream_param_validation_json(client):
     """入参校验在建流前 → 常规 JSON 4001（非 SSE）。"""
     resp = _post_stream(client, "长" * 501)
-    assert resp.status_code == 200
+    assert resp.status_code == 400
     assert resp.json()["code"] == 4001
 
 

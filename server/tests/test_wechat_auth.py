@@ -271,7 +271,7 @@ def test_wechat_login_bind_wrong_password(client: TestClient, wx_users,
     fake_code2session({"wx-code-b": "mock-openid-B3"})
     resp = client.post("/api/auth/wechat/login",
                        json={"code": "wx-code-b", "username": "wxtest_b", "password": "wrong"})
-    assert resp.status_code == 200
+    assert resp.status_code == 401
     assert resp.json()["code"] == 4102
 
 
@@ -281,7 +281,7 @@ def test_wechat_login_bind_openid_conflict(client: TestClient, wx_users,
     fake_code2session({"wx-conflict": "mock-openid-A"})  # A 已绑定该 openid
     resp = client.post("/api/auth/wechat/login",
                        json={"code": "wx-conflict", "username": "wxtest_b", "password": "123456"})
-    assert resp.status_code == 200
+    assert resp.status_code == 409
     assert resp.json()["code"] == 4091
 
 
@@ -291,7 +291,7 @@ def test_wechat_login_bind_account_conflict(client: TestClient, wx_users,
     fake_code2session({"wx-other": "mock-openid-OTHER"})
     resp = client.post("/api/auth/wechat/login",
                        json={"code": "wx-other", "username": "wxtest_a", "password": "123456"})
-    assert resp.status_code == 200
+    assert resp.status_code == 409
     assert resp.json()["code"] == 4091
 
 
@@ -321,7 +321,7 @@ def test_wechat_unbind(client: TestClient, wx_users, disable_login_rate,
 def test_wechat_unbind_requires_login(client: TestClient):
     """未登录解绑 → 4011。"""
     resp = client.delete("/api/auth/wechat/unbind")
-    assert resp.status_code == 200
+    assert resp.status_code == 401
     assert resp.json()["code"] == 4011
 
 

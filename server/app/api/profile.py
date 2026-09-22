@@ -40,18 +40,21 @@ def _mask_phone(phone: str | None) -> str | None:
 
 
 def _avatar_url(avatar: str | None) -> str | None:
-    """头像字段：存 file_id（纯数字）→ 校验文件存在 → 返回签名 URL；否则原样返回。"""
+    """头像字段：存 file_id（纯数字）→ 校验文件存在 → 返回签名 URL；否则原样返回。
+
+    P1-6：签名绑定 `file_hash`（与 `/api/files/{id}/url` 一致），否则直链验签会失败。
+    """
     if not avatar:
         return None
     if str(avatar).isdigit():
         with engine.connect() as conn:
             row = conn.execute(
-                text("SELECT id FROM campus_file WHERE id = :fid AND del_flag = '0'"),
+                text("SELECT file_hash FROM campus_file WHERE id = :fid AND del_flag = '0'"),
                 {"fid": int(avatar)},
             ).first()
         if row is None:
             return None
-        return build_signed_file_url(int(avatar))
+        return build_signed_file_url(int(avatar), row[0])
     return avatar
 
 

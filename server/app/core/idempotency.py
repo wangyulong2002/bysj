@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -27,6 +28,7 @@ from starlette.responses import Response
 from app.core.config import settings  # pyright: ignore[reportImplicitRelativeImport]
 from app.core.database import engine  # pyright: ignore[reportImplicitRelativeImport]
 from app.core.redis_client import redis_client  # pyright: ignore[reportImplicitRelativeImport]
+from app.core.time import now as campus_now  # pyright: ignore[reportImplicitRelativeImport]
 
 logger = logging.getLogger("campus.idempotency")
 
@@ -78,7 +80,8 @@ def _db_reserve(biz_key: str, user_id: int | None, method: str, path: str,
     - 返回 False：唯一冲突（并发占用或已完成）；
     - 其他异常：记告警并返回 True（不阻塞业务）。
     """
-    expire = datetime.now() + timedelta(seconds=settings.IDEMPOTENCY_EXPIRE_SECONDS)
+    # P1-13：统一时间源（Asia/Shanghai）
+    expire = campus_now() + timedelta(seconds=settings.IDEMPOTENCY_EXPIRE_SECONDS)
     try:
         with engine.begin() as conn:
             conn.execute(
@@ -101,7 +104,8 @@ def _db_reserve(biz_key: str, user_id: int | None, method: str, path: str,
 
 def _db_complete(biz_key: str, resp_status: int, resp_body: str) -> None:
     """业务完成后回填幂等记录（响应供后续重复请求直接返回）。"""
-    expire = datetime.now() + timedelta(seconds=settings.IDEMPOTENCY_EXPIRE_SECONDS)
+    # P1-13：统一时间源（Asia/Shanghai）
+    expire = campus_now() + timedelta(seconds=settings.IDEMPOTENCY_EXPIRE_SECONDS)
     try:
         with engine.begin() as conn:
             conn.execute(
@@ -131,8 +135,8 @@ def _db_lookup(biz_key: str) -> Response | None:
         with engine.connect() as conn:
             row = conn.execute(
                 text("SELECT response_code, response_body FROM campus_idempotency_key "
-                     "WHERE biz_key = :k AND expire_time > NOW()"),
-                {"k": biz_key},
+                     "WHERE biz_key = :k AND expire_time > :now"),
+                {"k": biz_key, "now": campus_now()},
             ).first()
         if row is None:
             return None
@@ -183,8 +187,10 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         cache_key = idempotency_cache_key(request, key)
 
         # 1. Redis 快速查询（命中直接返回）
+        #    P1-8：Redis / SQLAlchemy 都是**同步阻塞调用**，在 async 中间件里必须
+        #    丢到线程池执行，否则会冻结事件循环。
         try:
-            cached = redis_client.get(cache_key)
+            cached = await run_in_threadpool(redis_client.get, cache_key)
         except Exception:  # noqa: BLE001
             logger.warning("Redis 不可用，幂等降级 MySQL 直查")
             cached = None
@@ -195,30 +201,35 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 return resp
 
         # 2. MySQL 兜底查询（Redis 故障或未命中时；防止并发/重启后重复）
-        db_resp = _db_lookup(biz_key)
+        db_resp = await run_in_threadpool(_db_lookup, biz_key)
         if db_resp is not None:
             # 回填 Redis 缓存
             try:
-                redis_client.set(cache_key, _serialize(
-                    db_resp.status_code, db_resp.media_type, db_resp.body or b""),
-                    ex=settings.IDEMPOTENCY_EXPIRE_SECONDS)
+                payload = _serialize(
+                    db_resp.status_code, db_resp.media_type, db_resp.body or b""
+                )
+                await run_in_threadpool(
+                    redis_client.set,
+                    cache_key,
+                    payload,
+                    ex=settings.IDEMPOTENCY_EXPIRE_SECONDS,
+                )
             except Exception:  # noqa: BLE001
                 pass
             logger.info("幂等命中(MySQL): %s", biz_key)
             return db_resp
 
         # 2.5 占位插入（P1-12 并发语义：唯一索引防并发重复执行业务）
-        if not _db_reserve(biz_key, user_id, request.method, request.url.path, body_hash):
-            # 唯一冲突：并发占用或已完成 → 轮询回查首个请求结果（最长 ~3s）
-            logger.info("幂等占用冲突，等待首个请求完成: %s", biz_key)
-            for _ in range(30):
-                time.sleep(0.1)
-                existing = _db_lookup(biz_key)
-                if existing is not None:
-                    return existing
-            # 并发等待超时：返回 4091（HTTP 409）提示重试，不抛异常（BaseHTTPMiddleware
-            # 抛异常不经过 FastAPI 异常处理器，会直接冒泡成客户端异常）
-            logger.warning("幂等并发等待超时（biz_key=%s），返回冲突", biz_key)
+        reserved = await run_in_threadpool(
+            _db_reserve, biz_key, user_id, request.method, request.url.path, body_hash
+        )
+        if not reserved:
+            # 唯一冲突：同一 Idempotency-Key 正被另一个请求处理中。
+            # P1-8：原实现在事件循环里 `for _ in range(30): time.sleep(0.1)` 轮询最长 3 秒，
+            # 会把整个 uvicorn worker 的事件循环冻结 —— 单 worker 下就是"一次请求打死全站"
+            # 的 DoS 面。现改为**立即返回 409**，由客户端指数退避重试（幂等语义不变）。
+            # 注：不抛异常 —— BaseHTTPMiddleware 抛异常不经过 FastAPI 异常处理器。
+            logger.warning("幂等并发占用中（biz_key=%s），返回 409 由客户端重试", biz_key)
             return Response(
                 content=json.dumps(
                     {"code": 4091, "message": "请求处理中，请稍后重试", "data": None},
@@ -232,7 +243,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         if response.status_code >= 500:
             # 业务异常：释放占位（允许后续重试），不缓存失败响应
-            _db_release(biz_key)
+            await run_in_threadpool(_db_release, biz_key)
             return response
         body_iterator = getattr(response, "body_iterator", None)  # pyright: ignore[reportUnknownMemberType]
         if body_iterator is None:
@@ -246,13 +257,16 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
 
         # 4. 回填 MySQL 幂等记录（占位 → 完成；后续同键请求直接返回首次结果）
         try:
-            _db_complete(biz_key, response.status_code,
-                         _serialize(response.status_code, response.media_type, body))
+            payload = _serialize(response.status_code, response.media_type, body)
+            await run_in_threadpool(_db_complete, biz_key, response.status_code, payload)
             # Redis 缓存
             try:
-                redis_client.set(cache_key, _serialize(
-                    response.status_code, response.media_type, body),
-                    ex=settings.IDEMPOTENCY_EXPIRE_SECONDS)
+                await run_in_threadpool(
+                    redis_client.set,
+                    cache_key,
+                    payload,
+                    ex=settings.IDEMPOTENCY_EXPIRE_SECONDS,
+                )
             except Exception:  # noqa: BLE001
                 logger.warning("幂等 Redis 缓存写入失败（MySQL 已兜底）")
         except Exception as exc:  # noqa: BLE001

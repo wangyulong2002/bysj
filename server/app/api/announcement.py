@@ -50,7 +50,7 @@ _ANN_JOIN = (
 _ANN_TYPE_NAMES = {"1": "校园公告", "2": "院系公告"}  # v2.5/ADR-011：班级公告已移除
 
 
-def _visible_dept_ids(user: CurrentUser) -> list[int]:
+def _visible_dept_ids(user: CurrentUser) -> list[int] | None:
     """计算用户可见的院系集合（2.3 数据权限，公告可见范围）。
 
     v2.5（ADR-011）：班级公告类型已移除，可见范围不再按班级判定——
@@ -58,7 +58,12 @@ def _visible_dept_ids(user: CurrentUser) -> list[int]:
     - 院系公告（ann_type=2）：target_department ∈ 本集合。
 
     院系来源：学生 = 档案班级院系；教师 = 档案院系 ∪ 任教/所带班级院系（ADR-010）；
-    admin = 全量（返回空集合表示不过滤）。
+    admin = **全量，返回 None 表示不过滤**。
+
+    P1-16：原实现 admin 分支 `return []`，而 `_visibility_sql([])` 会生成
+    `IN (0)`（永远匹配不到）—— 结果是 admin 调用应用端公告接口时**只能看到全校
+    公告（ann_type=1），看不到任何院系公告**，且详情接口对院系公告返回 4032。
+    注释写的"全量"与实现完全相反，属功能性 bug。
     """
     role = user.role_code
     with engine.connect() as conn:
@@ -99,12 +104,17 @@ def _visible_dept_ids(user: CurrentUser) -> list[int]:
                 dept_ids.append(int(own[0]))
             return list(set(dept_ids))
 
-        # admin：全量（P1-10 仅管理端，应用端接口按登录态收敛，此处不额外过滤）
-        return []
+        # admin：全量（P1-16：用 None 表示"不过滤"；原实现返回 [] 会被拼成 IN (0)）
+        return None
 
 
-def _visibility_sql(dept_ids: list[int]) -> str:
-    """构造公告可见范围 SQL 片段（2.3；v2.5：仅校园/院系两路匹配）。"""
+def _visibility_sql(dept_ids: list[int] | None) -> str:
+    """构造公告可见范围 SQL 片段（2.3；v2.5：仅校园/院系两路匹配）。
+
+    P1-16：`dept_ids is None` → 返回 `1=1`（admin 全量，不过滤）。
+    """
+    if dept_ids is None:
+        return "1=1"
     dept_list = ",".join(str(d) for d in dept_ids) or "0"
     return (
         " (a.ann_type = '1' "
@@ -137,8 +147,13 @@ def _row_to_dict(r, with_content: bool = True) -> dict:
     }
 
 
-def _check_visibility(a_row: dict, dept_ids: list[int]) -> bool:
-    """公告可见性判定（详情接口用，2.3：越权返回 4032；v2.5 仅校园/院系）。"""
+def _check_visibility(a_row: dict, dept_ids: list[int] | None) -> bool:
+    """公告可见性判定（详情接口用，2.3：越权返回 4032；v2.5 仅校园/院系）。
+
+    P1-16：`dept_ids is None`（admin 全量）→ 直接可见。
+    """
+    if dept_ids is None:
+        return True
     ann_type = a_row["ann_type"]
     if ann_type == "1":
         return True

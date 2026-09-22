@@ -10,6 +10,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 BASE_DIR = Path(__file__).resolve().parents[2]   # server/
 PROJECT_ROOT = BASE_DIR.parent                     # bysj/（项目根，统一 .env 所在）
 
+# MySQL 会话参数（P1-18）：与 Django 侧显式设置**完全相同**的 sql_mode，
+# 避免同一句 SQL 在两端行为不一致（一侧报错、一侧截断）。
+# 取值即 MySQL 8 默认 sql_mode 全集。
+MYSQL_SQL_MODE = (
+    "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,"
+    "ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION"
+)
+MYSQL_COLLATION = "utf8mb4_0900_ai_ci"
+# 会话时区（P1-13）：与全栈 Asia/Shanghai、Django USE_TZ=False 对齐。
+# MySQL 容器默认 UTC，若不固定会话时区，SQL 的 NOW() 会与 Python 侧
+# datetime.now() 相差 8 小时，同一张表出现两个时间基准且无法察觉。
+MYSQL_TIME_ZONE = "+08:00"
+
 
 class Settings(BaseSettings):
     # 配置来源优先级：环境变量 > 项目根 .env > server/.env（本地兼容，已弃用）
@@ -23,14 +36,19 @@ class Settings(BaseSettings):
     # 服务基础
     APP_NAME: str = "智慧校园信息管理系统"
     APP_ENV: str = "dev"
-    DEBUG: bool = True
+    # P1-3：DEBUG 默认 False（fail-safe）——缺省配置不得带病上线；
+    # 本地开发由 .env 显式 DEBUG=true 打开。
+    DEBUG: bool = False
+    # P1-3：SQL 回显默认关闭。echo=True 会把 SQL 与**全部绑定参数**
+    #（含密码哈希、手机号）写进日志，属敏感信息落盘；排查 SQL 时显式 DB_ECHO=true。
+    DB_ECHO: bool = False
     API_PREFIX: str = "/api"
     # 对外公共基础地址（签名 URL 直链用，如 http://127.0.0.1:8000；部署改为服务器地址）
     PUBLIC_BASE_URL: str = ""
 
-    # MySQL
+    # MySQL（P1-18：默认端口与设计约定 / Django 侧统一为 3307）
     MYSQL_HOST: str = "127.0.0.1"
-    MYSQL_PORT: int = 3306
+    MYSQL_PORT: int = 3307
     MYSQL_USER: str = "root"
     MYSQL_PASS: str = ""
     MYSQL_DB: str = "campus"
@@ -80,6 +98,11 @@ class Settings(BaseSettings):
     RAG_STRICT_DOMAIN: int = 1
     # Worker 开关（测试环境置 0，避免 TestClient 拉起后台调度）
     RAG_WORKER_ENABLED: int = 1
+    # P1-14：是否在 **Web 进程内** 跑 RAG 调度。
+    # 默认 0 —— 调度应跑在独立进程（`python -m app.rag.worker` / `make rag-worker`），
+    # 避免长任务与用户请求争抢线程池、多副本重复调度、重启即中断。
+    # 仅单机演示/无独立 worker 时可置 1。
+    RAG_WORKER_IN_WEB: int = 0
 
     # 文件
     FILE_UPLOAD_DIR: str = "./uploads"
@@ -140,8 +163,16 @@ class Settings(BaseSettings):
         """允许上传的文件扩展名集合（小写去空白）。"""
         return {t.strip().lower() for t in self.FILE_ALLOWED_TYPES.split(",") if t.strip()}
 
+    @property
+    def is_production(self) -> bool:
+        """是否生产环境（APP_ENV ∈ {prod, production}）。"""
+        return self.APP_ENV.strip().lower() in {"prod", "production"}
+
     def validate_required(self) -> None:
-        """启动时校验必填配置项（9.3）。"""
+        """启动时校验必填配置项（9.3）+ 生产环境安全断言（P1-3/P2-12）。
+
+        P1-3：配置错误必须在**启动时**暴露（fail-fast），而不是以不安全默认值运行。
+        """
         missing = []
         if not self.MYSQL_PASS:
             missing.append("MYSQL_PASS")
@@ -151,6 +182,20 @@ class Settings(BaseSettings):
             raise RuntimeError(
                 f"缺少必要配置项: {', '.join(missing)}，请检查 server/.env（参考 .env.example）"
             )
+
+        # P1-3/P2-12：生产环境禁止 DEBUG / CORS=* / 明文 HTTP
+        if self.is_production:
+            problems = []
+            if self.DEBUG:
+                problems.append("DEBUG 必须为 false")
+            if "*" in self.cors_origins:
+                problems.append("CORS_ALLOWED_ORIGINS 不允许为 *（需白名单）")
+            if not self.PUBLIC_BASE_URL.startswith("https://"):
+                problems.append("PUBLIC_BASE_URL 必须为 https://（全站强制 TLS）")
+            if problems:
+                raise RuntimeError(
+                    f"生产环境（APP_ENV={self.APP_ENV}）配置不安全：" + "；".join(problems)
+                )
 
 
 @lru_cache

@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from app.api.deps import CurrentUser
@@ -101,8 +102,29 @@ def _leave_row(r, with_student: bool = True) -> dict:
 
 # ===== T5-1：学生提交请假 =====
 
+class LeaveCreateIn(BaseModel):
+    """请假提交请求（6.3.4，P1-11：替代 `body: dict`）。
+
+    原实现签名为 `body: dict`：无 schema、无类型、无范围校验，Swagger 上看不到
+    请求体结构（前端只能翻源码对接）。此处补齐 Pydantic 模型（零成本，已是依赖）。
+    """
+
+    leave_type: str = Field(..., description="请假类型：1事假 2病假 3其他")
+    reason: str = Field(..., min_length=1, max_length=500, description="请假事由")
+    start_time: str = Field(..., description="开始时间（ISO-8601，必须带时区）")
+    end_time: str = Field(..., description="结束时间（ISO-8601，必须带时区）")
+    attachment_id: int | None = Field(None, ge=1, description="附件文件 id（可选）")
+
+
+class LeaveApproveIn(BaseModel):
+    """请假审批请求（6.3.5，P1-11）。"""
+
+    approve: str = Field(..., description="审批结果：1通过 2驳回")
+    comment: str = Field("", max_length=500, description="审批意见")
+
+
 @router.post("")
-def leave_create(user: CurrentUser, body: dict) -> dict:
+def leave_create(user: CurrentUser, body: LeaveCreateIn) -> dict:
     """学生提交请假（6.3.4 / P1-14）。
 
     - 时长权威字段 leave_duration_minutes（分钟），total_days 换算；
@@ -110,11 +132,11 @@ def leave_create(user: CurrentUser, body: dict) -> dict:
     - 附件复用 campus_file（attachment_id）；
     - 幂等：Idempotency-Key 由中间件处理（P1-12）。
     """
-    leave_type = str(body.get("leave_type", ""))
-    reason = str(body.get("reason") or "").strip()
-    start_time = _parse_dt(body.get("start_time"))
-    end_time = _parse_dt(body.get("end_time"))
-    attachment_id = body.get("attachment_id")
+    leave_type = str(body.leave_type)
+    reason = body.reason.strip()
+    start_time = _parse_dt(body.start_time)
+    end_time = _parse_dt(body.end_time)
+    attachment_id = body.attachment_id
 
     if leave_type not in {"1", "2", "3"}:
         raise ParamError("请假类型无效（1事假 2病假 3其他）")
@@ -227,11 +249,18 @@ def leaves_pending(
     if user.role_code not in {"teacher", "admin"}:
         raise ForbiddenDataError("仅辅导员（教师兼任）可查看待审批列表")
     with engine.connect() as conn:
-        where = [
-            "l.del_flag = '0'",
-            "cl.counselor_id = :uid",  # 所带班级（动态判定，ADR-010）
-        ]
-        params: dict = {"uid": user.user_id}
+        # P1-17：admin 的 user_id 不是任何班级的 counselor_id，原实现恒按
+        # `cl.counselor_id = :uid` 过滤 → admin **恒查到空列表**（"接口通了但数据是空的"，
+        # 极耗排查时间）。管理员走全量视图（设计 2.3：admin 数据范围 = ALL）。
+        if user.role_code == "admin":
+            where = ["l.del_flag = '0'"]
+            params: dict = {}
+        else:
+            where = [
+                "l.del_flag = '0'",
+                "cl.counselor_id = :uid",  # 所带班级（动态判定，ADR-010）
+            ]
+            params = {"uid": user.user_id}
         if status:
             where.append("l.status = :st")
             params["st"] = status
@@ -269,7 +298,7 @@ def leaves_pending(
 # ===== T5-4：审批 =====
 
 @router.put("/{leave_id}/approve")
-def leave_approve(user: CurrentUser, leave_id: int, body: dict) -> dict:
+def leave_approve(user: CurrentUser, leave_id: int, body: LeaveApproveIn) -> dict:
     """审批请假（6.3.5 / T5-4）。
 
     - 越权：审批人必须是该生班级 counselor_id（4032，ADR-010）；
@@ -279,8 +308,8 @@ def leave_approve(user: CurrentUser, leave_id: int, body: dict) -> dict:
     """
     if user.role_code not in {"teacher", "admin"}:
         raise ForbiddenDataError("无审批权限")
-    approve = str(body.get("approve", ""))
-    comment = str(body.get("comment") or "").strip()
+    approve = str(body.approve)
+    comment = (body.comment or "").strip()
     if approve not in {"1", "2"}:
         raise ParamError("审批结果无效（1通过 2驳回）")
     if len(comment) > 500:

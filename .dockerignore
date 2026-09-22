@@ -1,0 +1,34 @@
+# 构建上下文裁剪（P0-6）
+# 目标：镜像内只保留运行所需源码，绝不把密钥/依赖/构建产物打进去。
+
+# 依赖与虚拟环境
+server/venv*/
+**/__pycache__/
+**/*.py[cod]
+node_modules/
+
+# 敏感配置（密钥只通过 env_file / 运行时注入）
+.env
+.env.*
+!.env.example
+
+# 运行产物
+logs/
+uploads/
+*.log
+
+# 前端依赖与构建产物（后端镜像不需要）
+uniapp/
+admin-web/node_modules/
+admin-web/dist/
+
+# 版本控制与 IDE
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# 文档与测试（镜像运行不需要；如需镜像内跑测试可放开）
+docs/
+server/tests/
+.github/

@@ -7,6 +7,12 @@
 # Feel free to rename the models, but don't rename db_table values or field names.
 from django.db import models
 
+# 说明（P0-4 收敛）：业务表 `del_flag` 统一带 `default='0'`（逻辑删除：0 正常 2 删除，
+# 设计 5.1）。原手写 DDL（sql/init_all.sql）本就写了 `NOT NULL DEFAULT '0'`，
+# 但由 migrations 建表时缺失默认值，导致省略 del_flag 的 INSERT 在严格模式下报 1364。
+# 以 migrations 为唯一 DDL 权威后，模型侧用 `db_default='0'` 生成**数据库级**默认值
+#（仅用 `default=` 只是 Python 层默认值，不会写进 DDL，测试库仍会报 1364）。
+
 
 class CampusDepartment(models.Model):
     id = models.BigAutoField(primary_key=True, db_comment='主键')
@@ -16,7 +22,7 @@ class CampusDepartment(models.Model):
     create_time = models.DateTimeField(blank=True, null=True, db_comment='创建时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除：0正常 2删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除：0正常 2删除')
 
     class Meta:
         managed = True
@@ -30,12 +36,12 @@ class CampusTerm(models.Model):
     start_date = models.DateField(db_comment='开始日期')
     end_date = models.DateField(db_comment='结束日期')
     total_weeks = models.IntegerField(db_comment='总周数')
-    is_current = models.CharField(max_length=1, db_comment='是否当前学期：0否 1是（任意时刻仅一个）')
+    is_current = models.CharField(db_default='0', max_length=1, db_comment='是否当前学期：0否 1是（任意时刻仅一个）')
     create_by = models.BigIntegerField(blank=True, null=True, db_comment='创建人')
     create_time = models.DateTimeField(blank=True, null=True, db_comment='创建时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     # A unique constraint could not be introspected.
     class Meta:
@@ -56,7 +62,7 @@ class CampusClass(models.Model):
     create_time = models.DateTimeField(blank=True, null=True, db_comment='创建时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     class Meta:
         managed = True
@@ -68,14 +74,14 @@ class CampusCourse(models.Model):
     id = models.BigAutoField(primary_key=True, db_comment='主键')
     course_name = models.CharField(max_length=100, db_comment='课程名称')
     course_code = models.CharField(unique=True, max_length=30, db_comment='课程编码（唯一）')
-    credit = models.DecimalField(max_digits=3, decimal_places=1, db_comment='学分')
-    hours = models.IntegerField(db_comment='总学时')
+    credit = models.DecimalField(db_default=0.0, max_digits=3, decimal_places=1, db_comment='学分')
+    hours = models.IntegerField(db_default=0, db_comment='总学时')
     department = models.ForeignKey(CampusDepartment, models.DO_NOTHING, blank=True, null=True, db_comment='开课院系')
     create_by = models.BigIntegerField(blank=True, null=True, db_comment='创建人')
     create_time = models.DateTimeField(blank=True, null=True, db_comment='创建时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     class Meta:
         managed = True
@@ -93,7 +99,7 @@ class CampusStudent(models.Model):
     create_time = models.DateTimeField(blank=True, null=True, db_comment='创建时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     class Meta:
         managed = True
@@ -111,7 +117,7 @@ class CampusTeacher(models.Model):
     create_time = models.DateTimeField(blank=True, null=True, db_comment='创建时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     class Meta:
         managed = True
@@ -129,7 +135,7 @@ class CampusCourseOffering(models.Model):
     create_time = models.DateTimeField(blank=True, null=True, db_comment='创建时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     class Meta:
         managed = True
@@ -151,7 +157,7 @@ class CampusCourseSchedule(models.Model):
     create_time = models.DateTimeField(blank=True, null=True, db_comment='创建时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     class Meta:
         managed = True
@@ -168,15 +174,15 @@ class CampusScore(models.Model):
     total_score = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True, db_comment='总评成绩（自动计算）')
     usual_ratio = models.IntegerField(blank=True, null=True, db_comment='平时占比快照（发布时固化）')
     exam_ratio = models.IntegerField(blank=True, null=True, db_comment='考试占比快照')
-    is_published = models.CharField(max_length=1, db_comment='0未发布 1已发布')
-    version = models.IntegerField(db_comment='乐观锁版本号（3.6/A-02）')
+    is_published = models.CharField(db_default='0', max_length=1, db_comment='0未发布 1已发布')
+    version = models.IntegerField(db_default=0, db_comment='乐观锁版本号（3.6/A-02）')
     create_by = models.BigIntegerField(blank=True, null=True, db_comment='录入人')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='最近修改人')
     create_time = models.DateTimeField(blank=True, null=True, db_comment='创建时间')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='最近修改时间')
     publish_by = models.BigIntegerField(blank=True, null=True, db_comment='发布人')
     publish_time = models.DateTimeField(blank=True, null=True, db_comment='发布时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     class Meta:
         managed = True
@@ -200,7 +206,7 @@ class CampusScoreAudit(models.Model):
     create_time = models.DateTimeField(blank=True, null=True, db_comment='创建时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     class Meta:
         managed = True
@@ -215,14 +221,14 @@ class CampusAnnouncement(models.Model):
     ann_type = models.CharField(max_length=1, db_comment='1校园 2院系（v2.5/ADR-011：移除 3班级）')
     target_department = models.ForeignKey(CampusDepartment, models.DO_NOTHING, blank=True, null=True, db_comment='院系公告目标院系（ann_type=2 时填，可空）')
     publisher = models.ForeignKey('users.CustomUser', models.RESTRICT, blank=True, null=True, db_comment='发布人（sys_user.id，仅管理员）')
-    is_top = models.CharField(max_length=1, db_comment='是否置顶')
-    status = models.CharField(max_length=1, db_comment='0草稿 1发布 2下架')
+    is_top = models.CharField(db_default='0', max_length=1, db_comment='是否置顶')
+    status = models.CharField(db_default='0', max_length=1, db_comment='0草稿 1发布 2下架')
     publish_time = models.DateTimeField(blank=True, null=True, db_comment='发布时间')
     create_by = models.BigIntegerField(blank=True, null=True, db_comment='创建人')
     create_time = models.DateTimeField(blank=True, null=True, db_comment='创建时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     class Meta:
         managed = True
@@ -235,19 +241,19 @@ class CampusFile(models.Model):
     original_name = models.CharField(max_length=255, db_comment='原始文件名')
     stored_name = models.CharField(max_length=64, db_comment='服务端存储名（随机 UUID）')
     mime_type = models.CharField(max_length=100, db_comment='MIME 类型')
-    file_size = models.BigIntegerField(db_comment='大小（字节）')
+    file_size = models.BigIntegerField(db_default=0, db_comment='大小（字节）')
     storage_path = models.CharField(max_length=255, db_comment='存储相对路径')
     file_hash = models.CharField(max_length=64, blank=True, null=True, db_comment='文件哈希（去重/校验）')
     uploader = models.ForeignKey('users.CustomUser', models.RESTRICT, blank=True, null=True, db_comment='上传人（sys_user.id）')
     owner_id = models.BigIntegerField(blank=True, null=True, db_comment='归属用户（B-03，ACL 判定）')
     biz_type = models.CharField(max_length=30, blank=True, null=True, db_comment='业务类型（avatar/leave_attachment/announcement_attachment，P1-16）')
     biz_id = models.BigIntegerField(blank=True, null=True, db_comment='业务记录 id（P1-16：leave_id/announcement_id）')
-    visibility = models.CharField(max_length=1, db_comment='可见性（P1-16：1私有 2本人+授权 3登录可见 4公开）')
+    visibility = models.CharField(db_default='2', max_length=1, db_comment='可见性（P1-16：1私有 2本人+授权 3登录可见 4公开）')
     create_by = models.BigIntegerField(blank=True, null=True, db_comment='创建人')
     create_time = models.DateTimeField(blank=True, null=True, db_comment='创建时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     class Meta:
         managed = True
@@ -262,10 +268,10 @@ class CampusLeave(models.Model):
     reason = models.CharField(max_length=500, blank=True, null=True, db_comment='请假事由')
     start_time = models.DateTimeField(db_comment='开始时间')
     end_time = models.DateTimeField(db_comment='结束时间')
-    leave_duration_minutes = models.IntegerField(db_comment='时长权威字段（P1-14，分钟）')
-    total_days = models.DecimalField(max_digits=4, decimal_places=1, db_comment='时长（天，由分钟换算，展示用）')
-    status = models.CharField(max_length=1, db_comment='0待审批 1通过 2驳回 3撤销')
-    version = models.IntegerField(db_comment='乐观锁版本号（3.6/A-02）')
+    leave_duration_minutes = models.IntegerField(db_default=0, db_comment='时长权威字段（P1-14，分钟）')
+    total_days = models.DecimalField(db_default=0.0, max_digits=4, decimal_places=1, db_comment='时长（天，由分钟换算，展示用）')
+    status = models.CharField(db_default='0', max_length=1, db_comment='0待审批 1通过 2驳回 3撤销')
+    version = models.IntegerField(db_default=0, db_comment='乐观锁版本号（3.6/A-02）')
     approver_id = models.BigIntegerField(blank=True, null=True, db_comment='审批人（辅导员 sys_user.id）')
     approve_time = models.DateTimeField(blank=True, null=True, db_comment='审批时间')
     approve_comment = models.CharField(max_length=500, blank=True, null=True, db_comment='审批意见')
@@ -274,7 +280,7 @@ class CampusLeave(models.Model):
     create_time = models.DateTimeField(blank=True, null=True, db_comment='提交时间/创建时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     class Meta:
         managed = True
@@ -290,13 +296,13 @@ class CampusMessage(models.Model):
     content = models.CharField(max_length=500, blank=True, null=True, db_comment='内容')
     business_type = models.CharField(max_length=30, blank=True, null=True, db_comment='业务类型（leave/announcement/...）')
     business_id = models.BigIntegerField(blank=True, null=True, db_comment='业务记录 id')
-    is_read = models.CharField(max_length=1, db_comment='0未读 1已读')
+    is_read = models.CharField(db_default='0', max_length=1, db_comment='0未读 1已读')
     read_time = models.DateTimeField(blank=True, null=True, db_comment='阅读时间')
     create_by = models.BigIntegerField(blank=True, null=True, db_comment='创建人')
     create_time = models.DateTimeField(blank=True, null=True, db_comment='创建时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     class Meta:
         managed = True
@@ -311,13 +317,13 @@ class CampusKnowledge(models.Model):
     content = models.TextField(blank=True, null=True, db_comment='正文（富文本）')
     tags = models.CharField(max_length=200, blank=True, null=True, db_comment='标签（逗号分隔）')
     content_hash = models.CharField(max_length=64, blank=True, null=True, db_comment='内容哈希（变更检测，避免无变化重复向量化）')
-    status = models.CharField(max_length=1, db_comment='0草稿 1发布（发布即触发向量化）')
+    status = models.CharField(db_default='0', max_length=1, db_comment='0草稿 1发布（发布即触发向量化）')
     publisher = models.ForeignKey('users.CustomUser', models.RESTRICT, blank=True, null=True, db_comment='发布人（sys_user.id）')
     create_by = models.BigIntegerField(blank=True, null=True, db_comment='创建人')
     create_time = models.DateTimeField(blank=True, null=True, db_comment='创建时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     class Meta:
         managed = True
@@ -329,17 +335,17 @@ class CampusRagChunk(models.Model):
     id = models.BigAutoField(primary_key=True, db_comment='主键')
     source_type = models.CharField(max_length=1, db_comment='1公告 2知识库')
     source_id = models.BigIntegerField(db_comment='原文档 id')
-    source_version = models.IntegerField(db_comment='文档版本号（编辑后递增，整源重建判定）')
-    chunk_index = models.IntegerField(db_comment='分片序号')
+    source_version = models.IntegerField(db_default=1, db_comment='文档版本号（编辑后递增，整源重建判定）')
+    chunk_index = models.IntegerField(db_default=0, db_comment='分片序号')
     content = models.TextField(blank=True, null=True, db_comment='分片文本（冗余存储）')
     title = models.CharField(max_length=100, blank=True, null=True, db_comment='来源标题')
     url = models.CharField(max_length=255, blank=True, null=True, db_comment='来源链接')
-    status = models.CharField(max_length=1, db_comment='0待向量化 1已向量化 2失败')
+    status = models.CharField(db_default='0', max_length=1, db_comment='0待向量化 1已向量化 2失败')
     create_by = models.BigIntegerField(blank=True, null=True, db_comment='创建人')
     create_time = models.DateTimeField(blank=True, null=True, db_comment='创建时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     class Meta:
         managed = True
@@ -353,13 +359,13 @@ class CampusRagLog(models.Model):
     question = models.CharField(max_length=500, blank=True, null=True, db_comment='用户问题（P2-18：默认不存全文，仅摘要/置空）')
     answer = models.TextField(blank=True, null=True, db_comment='回答')
     ref_ids = models.CharField(max_length=500, blank=True, null=True, db_comment='引用来源 id 列表')
-    hit_count = models.IntegerField(db_comment='命中检索片段数')
+    hit_count = models.IntegerField(db_default=0, db_comment='命中检索片段数')
     model = models.CharField(max_length=30, blank=True, null=True, db_comment='生成模型')
-    prompt_tokens = models.IntegerField(db_comment='输入 token')
-    completion_tokens = models.IntegerField(db_comment='输出 token')
-    cost_time_ms = models.IntegerField(db_comment='总耗时')
+    prompt_tokens = models.IntegerField(db_default=0, db_comment='输入 token')
+    completion_tokens = models.IntegerField(db_default=0, db_comment='输出 token')
+    cost_time_ms = models.IntegerField(db_default=0, db_comment='总耗时')
     ip = models.CharField(max_length=50, blank=True, null=True, db_comment='提问者 IP（P2-18：落库前哈希/脱敏）')
-    feedback = models.CharField(max_length=1, db_comment='0未评 1赞 2踩')
+    feedback = models.CharField(db_default='0', max_length=1, db_comment='0未评 1赞 2踩')
     refuse_reason = models.CharField(
         max_length=20, blank=True, null=True,
         db_comment='拒答原因（v2.6/ADR-012 8.4.1：no_context 无相关资料 / out_of_scope 越界领域 / unsafe 敏感内容；未拒答为 NULL）',
@@ -368,7 +374,7 @@ class CampusRagLog(models.Model):
     create_time = models.DateTimeField(blank=True, null=True, db_comment='时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     class Meta:
         managed = True
@@ -381,15 +387,15 @@ class CampusRagTask(models.Model):
     operation = models.CharField(max_length=1, db_comment='1 upsert 2 delete')
     source_type = models.CharField(max_length=1, db_comment='1公告 2知识库')
     source_id = models.BigIntegerField(db_comment='原文档 id')
-    status = models.CharField(max_length=1, db_comment='0 PENDING 1 PROCESSING 2 SUCCESS 3 FAILED')
-    retry_count = models.IntegerField(db_comment='已重试次数（上限 3）')
+    status = models.CharField(db_default='0', max_length=1, db_comment='0 PENDING 1 PROCESSING 2 SUCCESS 3 FAILED')
+    retry_count = models.IntegerField(db_default=0, db_comment='已重试次数（上限 3）')
     next_retry_time = models.DateTimeField(blank=True, null=True, db_comment='下次重试时间（指数退避）')
     last_error = models.CharField(max_length=500, blank=True, null=True, db_comment='最近错误信息')
     create_by = models.BigIntegerField(blank=True, null=True, db_comment='创建人')
     create_time = models.DateTimeField(blank=True, null=True, db_comment='创建时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     class Meta:
         managed = True
@@ -404,14 +410,14 @@ class CampusIdempotencyKey(models.Model):
     method = models.CharField(max_length=20, db_comment='请求方法')
     path = models.CharField(max_length=255, db_comment='请求路径')
     body_hash = models.CharField(max_length=64, blank=True, null=True, db_comment='请求体哈希（SHA-256）')
-    response_code = models.IntegerField(db_comment='首次响应 code')
+    response_code = models.IntegerField(db_default=0, db_comment='首次响应 code')
     response_body = models.JSONField(blank=True, null=True, db_comment='首次响应体（重复请求直接返回）')
     expire_time = models.DateTimeField(db_comment='过期时间（业务超时 + 24h）')
     create_by = models.BigIntegerField(blank=True, null=True, db_comment='创建人')
     create_time = models.DateTimeField(blank=True, null=True, db_comment='创建时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     class Meta:
         managed = True
@@ -424,13 +430,13 @@ class SysDictType(models.Model):
 
     dict_name = models.CharField(max_length=100, db_comment='字典名称')
     dict_type = models.CharField(unique=True, max_length=100, db_comment='字典类型（唯一）')
-    status = models.CharField(max_length=1, default='0', db_comment='状态：0正常 1停用')
+    status = models.CharField(db_default='0', max_length=1, default='0', db_comment='状态：0正常 1停用')
     remark = models.CharField(max_length=500, blank=True, null=True, db_comment='备注')
     create_by = models.BigIntegerField(blank=True, null=True, db_comment='创建人')
     create_time = models.DateTimeField(blank=True, null=True, db_comment='创建时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     class Meta:
         managed = True
@@ -441,22 +447,52 @@ class SysDictType(models.Model):
 class SysDictData(models.Model):
     """字典数据表（设计 5.2，sys_dict_data）。"""
 
-    dict_sort = models.IntegerField(db_comment='排序')
+    dict_sort = models.IntegerField(db_default=0, db_comment='排序')
     dict_label = models.CharField(max_length=100, db_comment='标签')
     dict_value = models.CharField(max_length=100, db_comment='值')
     dict_type = models.CharField(max_length=100, db_comment='类型（关联 sys_dict_type）')
     css_class = models.CharField(max_length=100, blank=True, null=True, db_comment='样式 class')
     list_class = models.CharField(max_length=100, blank=True, null=True, db_comment='列表样式')
-    is_default = models.CharField(max_length=1, db_comment='是否默认：Y/N')
-    status = models.CharField(max_length=1, db_comment='状态：0正常 1停用')
+    is_default = models.CharField(db_default='N', max_length=1, db_comment='是否默认：Y/N')
+    status = models.CharField(db_default='0', max_length=1, db_comment='状态：0正常 1停用')
     remark = models.CharField(max_length=500, blank=True, null=True, db_comment='备注')
     create_by = models.BigIntegerField(blank=True, null=True, db_comment='创建人')
     create_time = models.DateTimeField(blank=True, null=True, db_comment='创建时间')
     update_by = models.BigIntegerField(blank=True, null=True, db_comment='更新人')
     update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
-    del_flag = models.CharField(max_length=1, db_comment='逻辑删除')
+    del_flag = models.CharField(max_length=1, default='0', db_default='0', db_comment='逻辑删除')
 
     class Meta:
         managed = True
         db_table = 'sys_dict_data'
         db_table_comment = '字典数据表'
+
+
+class SysCodeSequence(models.Model):
+    """业务编码序列表（P1-12，sys_code_sequence）。
+
+    审核报告 P1-12：原 `_gen_unique_code` 用 `random.choices` + check-then-act +
+    时间戳兜底生成学号/工号/班级编码 —— 非加密随机、并发下靠唯一索引兜、
+    30 次重试耗尽后回退时间戳（同一秒并发必然冲突且长度不一致），且业务语义为 0
+    （学号无法排序、无法按学号推断年级、无法与教务对接）。
+
+    本表提供**中心化、原子、单调递增**的编码分配器：`(prefix, year)` 唯一，
+    取号时 `SELECT ... FOR UPDATE` 锁行后自增，多实例部署下仍严格有序、不重复。
+    编码形态：`{prefix}{year}{序号:补零}`（如 S20260001）。
+    """
+
+    prefix = models.CharField(max_length=10, db_comment='编码前缀（业务类型：S/T/CLS/CRS/DEPT）')
+    year = models.IntegerField(db_comment='年份（与 prefix 共同构成序列，如 2026）')
+    last_value = models.IntegerField(default=0, db_comment='已分配的最大序号')
+    seq_width = models.IntegerField(default=4, db_comment='序号补零宽度')
+    update_time = models.DateTimeField(blank=True, null=True, db_comment='更新时间')
+
+    class Meta:
+        managed = True
+        db_table = 'sys_code_sequence'
+        db_table_comment = '业务编码序列表（P1-12）'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['prefix', 'year'], name='uk_code_seq_prefix_year'
+            ),
+        ]

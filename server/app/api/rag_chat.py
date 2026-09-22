@@ -40,6 +40,7 @@ from app.core.errors import (
     RateLimitedError,
     VectorUnavailableError,
 )
+from app.core.login_lock import check_rate_limit
 from app.core.response import fail, success
 from app.rag import scope_keywords
 from app.rag.retriever import hybrid_search
@@ -111,25 +112,25 @@ class ChatRequest(BaseModel):
 # ===== 工具：限流 / 隐私 / PII =====
 
 def _check_rate_limit(ip: str) -> None:
-    """IP 限流（8.4）：分钟/日两级 Redis 计数器；Redis 故障放行（9.7）。"""
-    from app.core.redis_client import redis_client
+    """IP 限流（8.4）：分钟/日两级计数器。
 
-    minute_key = f"rag:rate:{ip}:min"
-    day_key = f"rag:rate:{ip}:day"
-    try:
-        minute_count = redis_client.incr(minute_key)
-        if minute_count == 1:
-            redis_client.expire(minute_key, 60)
-        now = datetime.now()
-        midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        day_count = redis_client.incr(day_key)
-        if day_count == 1:
-            redis_client.expire(day_key, max(1, int((midnight - now).total_seconds())))
-    except RedisError:
-        # 9.7 降级矩阵：RAG 限流遇 Redis 故障 → 放行并记告警，恢复后自动生效
-        logger.warning("RAG 限流 Redis 故障，本次放行（ip=%s）", _hash_ip(ip))
-        return
-    if minute_count > settings.RAG_RATE_PER_MIN or day_count > settings.RAG_RATE_PER_DAY:
+    P1-4：收敛为统一的 `login_lock.check_rate_limit`（同一份实现 + 显式降级策略），
+    不再各自硬编码。两级窗口沿用既有键名 `rag:rate:{ip}:min|day`，
+    保持运维与测试清理约定不变。
+
+    降级策略取 `allow`：与设计 9.7 降级矩阵一致 —— RAG 是**公开只读**入口，
+    Redis 故障时可用性优先（无账号资产可爆破）；登录等安全敏感入口则默认走
+    进程内计数（见 `login_lock.check_rate_limit` 的 `on_redis_failure`）。
+    """
+    ok_minute = check_rate_limit(
+        "rag_min", ip, settings.RAG_RATE_PER_MIN, 60,
+        key_override=f"rag:rate:{ip}:min", on_redis_failure="allow",
+    )
+    ok_day = check_rate_limit(
+        "rag_day", ip, settings.RAG_RATE_PER_DAY, 86400,
+        key_override=f"rag:rate:{ip}:day", on_redis_failure="allow",
+    )
+    if not (ok_minute and ok_day):
         raise RateLimitedError("提问频率超限，请稍后再试")
 
 

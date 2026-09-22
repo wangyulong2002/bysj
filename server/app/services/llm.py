@@ -109,13 +109,47 @@ def chat_completion(messages: list[dict],
         raise LLMError(f"LLM 双通道均失败（方舟+Agnes）: {exc}") from exc
 
 
+def _estimate_tokens(text: str) -> int:
+    """按字符类别估算 token 数（P1-15，仅在上游未回传 usage 时使用）。
+
+    原实现用「字符数 ÷ 2」：中文实际约 1~1.5 token/字、英文约 0.25 token/字符，
+    误差可达 3~8 倍 —— 而这些值被落库到 `campus_rag_log` 并用于成本核算与容量规划，
+    「基于假数据的成本决策比没有数据更危险」。
+    此处按字符类别区分（CJK 约 1 token/字，其它约 4 字符/token），
+    并把 `estimated=True` 一并返回，明确标注非计费口径。
+    """
+    cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+    other = max(0, len(text) - cjk)
+    return max(1, cjk + other // 4)
+
+
+def _build_usage(real_usage, model: str, messages: list[dict], parts: list[str]) -> dict:
+    """组装 usage（P1-15）：真实 usage 优先，缺失才估算并标记 estimated。"""
+    if real_usage is not None:
+        return {
+            "model": model,
+            "prompt_tokens": int(getattr(real_usage, "prompt_tokens", 0) or 0),
+            "completion_tokens": int(getattr(real_usage, "completion_tokens", 0) or 0),
+            "estimated": False,
+        }
+    prompt_text = "".join(str(m.get("content", "")) for m in messages)
+    return {
+        "model": model,
+        "prompt_tokens": _estimate_tokens(prompt_text),
+        "completion_tokens": _estimate_tokens("".join(parts)),
+        "estimated": True,
+    }
+
+
 def chat_completion_stream(messages: list[dict], max_tokens: int | None = None,
                            usage_out: dict | None = None):
     """流式生成（T7-8/8.5）：yield 增量文本；主通道方舟 → 首块前失败自动切 Agnes。
 
     - 逐段 yield 增量文本（str）；
-    - 流结束把 usage 写入 ``usage_out``（dict）：model/prompt_tokens/completion_tokens
-      （SSE 流式响应无 usage 回包，token 数按字符量估算，仅作 campus_rag_log 参考）；
+    - 流结束把 usage 写入 ``usage_out``（dict，P1-15）：
+      `model` / `prompt_tokens` / `completion_tokens` / `estimated`；
+      **优先采用上游回传的真实 usage**（`stream_options={"include_usage": True}`），
+      上游未回传时才估算，并把 `estimated=True` 显式标出，避免被当成计费口径；
     - **通道切换仅发生在首个增量产生之前**（连接/鉴权/参数类错误尽早暴露）；
       中途断流异常向上抛——已发出的增量不回滚（SSE 语义），由接口层推 error 帧；
     - ``AGNES_*`` 缺省时仅主通道（行为与 v2.6 一致）。
@@ -126,14 +160,24 @@ def chat_completion_stream(messages: list[dict], max_tokens: int | None = None,
         """打开流并强制消费首个含内容的事件（尽早暴露连接/鉴权/参数错误）。
 
         返回 (stream, iterator, first_piece)；流为空时 first_piece 为 None。
+
+        P1-15：附加 `stream_options={"include_usage": True}` 以获取上游真实 token 用量；
+        部分网关/兼容实现不支持该参数，故退化为不带该参数的调用（不影响流式可用性）。
         """
-        stream = client.chat.completions.create(
+        kwargs = dict(
             model=model,
             messages=messages,
             max_tokens=limit,
             timeout=settings.LLM_TIMEOUT_SECONDS,
             stream=True,
         )
+        try:
+            stream = client.chat.completions.create(
+                **kwargs, stream_options={"include_usage": True}
+            )
+        except (TypeError, ValueError, openai.BadRequestError):
+            logger.info("上游不支持 stream_options.include_usage，改用字符量估算 token")
+            stream = client.chat.completions.create(**kwargs)
         it = iter(stream)
         for event in it:
             if not getattr(event, "choices", None):
@@ -143,11 +187,15 @@ def chat_completion_stream(messages: list[dict], max_tokens: int | None = None,
         return stream, it, None
 
     def _drain(it, first: str | None, model: str):
-        """消费首块之后的流：yield 增量；结束写 usage_out。"""
+        """消费首块之后的流：yield 增量；结束写 usage_out（P1-15）。"""
         parts = [first] if first else []
+        real_usage = None
         if first:
             yield first
         for event in it:
+            # P1-15：include_usage 的末尾块 choices 为空但带 usage，必须在 continue 前读取
+            if getattr(event, "usage", None) is not None:
+                real_usage = event.usage
             if not getattr(event, "choices", None):
                 continue
             piece = getattr(event.choices[0].delta, "content", None) or ""
@@ -156,11 +204,7 @@ def chat_completion_stream(messages: list[dict], max_tokens: int | None = None,
                 yield piece
         if usage_out is not None:
             usage_out.clear()
-            usage_out.update({
-                "model": model,
-                "prompt_tokens": sum(len(m.get("content", "")) for m in messages) // 2,
-                "completion_tokens": max(1, len("".join(parts)) // 2),
-            })
+            usage_out.update(_build_usage(real_usage, model, messages, parts))
 
     channels: list[tuple[openai.OpenAI, str]] = [(get_ark_client(), settings.LLM_MODEL)]
     if agnes_enabled():

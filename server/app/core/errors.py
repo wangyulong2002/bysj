@@ -27,6 +27,7 @@ class ErrorCode(IntEnum):
     OFFERING_NOT_FOUND = 4201  # 教学班不存在
     LEAVE_STATUS_INVALID = 4301  # 请假状态不可变更
     SCORE_NOT_PUBLISHED = 4401  # 成绩未发布
+    FILE_NOT_FOUND = 4501      # P1-7：文件不存在（与 4001「参数错误」区分语义）
 
 
 ERROR_MESSAGES = {
@@ -44,7 +45,39 @@ ERROR_MESSAGES = {
     ErrorCode.OFFERING_NOT_FOUND: "教学班不存在",
     ErrorCode.LEAVE_STATUS_INVALID: "请假状态不可变更",
     ErrorCode.SCORE_NOT_PUBLISHED: "成绩尚未发布",
+    ErrorCode.FILE_NOT_FOUND: "文件不存在或已被删除",
 }
+
+# ===== P0-1：业务 code → HTTP 状态码（双层映射，设计报告 6.1）=====
+# 统一响应体 {code,message,data} 与「HTTP 一律 200」是两件事：
+# 前者是契约，后者会让 Nginx / WAF / APM / 告警系统把 5xx 统计为成功请求（故障静默）。
+# 因此保留业务 code 的同时，HTTP status 按语义返回。未登记的 code 默认 400。
+HTTP_STATUS_MAP = {
+    4001: 400,   # 参数错误
+    4011: 401,   # 未登录
+    4031: 403,   # 无权限（功能）
+    4032: 403,   # 越权（数据范围）
+    4091: 409,   # 冲突 / 乐观锁
+    4291: 429,   # 限流
+    4501: 404,   # 文件不存在（P1-7）
+    5000: 500,   # 服务异常
+    5001: 503,   # 上游 LLM 不可用
+    5002: 503,   # 向量检索不可用
+    # ---- 业务错误码（P2-21）：同样按语义映射，避免被网关/监控误判 ----
+    4101: 403,   # 账号锁定
+    4102: 401,   # 密码错误
+    4201: 404,   # 教学班不存在
+    4301: 409,   # 请假状态不可变更
+    4401: 403,   # 成绩未发布
+}
+
+
+def http_status_for(code: int | ErrorCode) -> int:
+    """业务错误码 → HTTP 状态码（P0-1）。未登记的错误码按 400 处理。"""
+    try:
+        return HTTP_STATUS_MAP.get(int(code), 400)
+    except (TypeError, ValueError):
+        return 400
 
 
 class BizError(Exception):
@@ -146,3 +179,14 @@ class ScoreNotPublishedError(BizError):
 
     def __init__(self, message: str = None):
         super().__init__(ErrorCode.SCORE_NOT_PUBLISHED, message)
+
+
+class FileMissingError(BizError):
+    """文件不存在（P1-7/4501）：HTTP 404，与 4001「参数错误」语义区分。
+
+    P1-7：文件不存在此前统一抛 ParamError(4001)，客户端无法区分
+    「参数写错」与「资源已删除」，也影响告警分类。
+    """
+
+    def __init__(self, message: str = None):
+        super().__init__(ErrorCode.FILE_NOT_FOUND, message)

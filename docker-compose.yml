@@ -1,0 +1,98 @@
+# ============================================================
+# bysj 本地/演示编排（P0-6）
+# ------------------------------------------------------------
+# 此前 MySQL / Redis 仅靠"口头约定是 Docker 容器"，无 compose 声明。
+# 本文件把依赖与两个后端服务显式化：
+#   mysql   3307（对齐设计端口约定，避免与宿主 3306 混淆）
+#   redis   6379（Redis Stack，含 RediSearch，RAG 向量索引需要）
+#   backend 8000（FastAPI 应用端，生产进程 uvicorn）
+#   manage  8001（Django 管理端，生产进程 gunicorn —— 禁止 runserver）
+#
+# 用法：
+#   cp .env.example .env      # 填 DJANGO_SECRET_KEY / MYSQL_PASS / JWT_SECRET
+#   docker compose up -d --build
+#   docker compose exec manage python manage.py migrate
+#
+# 注意：性能/配额敏感能力（方舟 LLM、Embedding）依赖真实密钥，见 .env。
+# ============================================================
+services:
+  mysql:
+    image: mysql:8
+    container_name: campus-mysql
+    restart: always
+    ports:
+      - "3307:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASS:-123456}
+      MYSQL_DATABASE: ${MYSQL_DB_CAMPUS:-campus}
+      TZ: Asia/Shanghai
+    command: >-
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_0900_ai_ci
+    volumes:
+      - campus-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis/redis-stack:latest
+    container_name: redis-stack
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-stack-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: .
+    image: bysj-backend:latest
+    container_name: bysj-fastapi
+    restart: always
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./uploads:/app/uploads
+    command: ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  manage:
+    build: .
+    image: bysj-backend:latest
+    container_name: bysj-django
+    restart: always
+    depends_on:
+      mysql:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8001:8001"
+    working_dir: /app/manage
+    # 生产禁用 runserver（P0-6）
+    command: ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8001", "--workers", "2"]
+
+volumes:
+  campus-mysql-data:
+  redis-stack-data:

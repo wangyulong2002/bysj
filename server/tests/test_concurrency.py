@@ -57,8 +57,11 @@ def conc_data(client: TestClient):
                 "VALUES (:id, '并发课程', 'CK', 3.0, 48, :did, '0')"
             ), {"id": RID, "did": RID})
             conn.execute(text(
+                # P0-5：测试库由 migrations 新建、**不含业务种子数据**，因此测试必须自带
+                # 所需前置数据。课表查询依赖"当前学期"（is_current='1'），原实现依赖
+                # 环境里的种子学期，在干净测试库上会 4001（当前学期未配置）。
                 "INSERT INTO campus_term (id, term_name, start_date, end_date, total_weeks, is_current, del_flag) "
-                "VALUES (:id, '并发学期', '2026-02-01', '2026-07-01', 20, '0', '0')"
+                "VALUES (:id, '并发学期', '2026-02-01', '2026-07-01', 20, '1', '0')"
             ), {"id": RID})
             conn.execute(text(
                 "INSERT INTO campus_student (id, user_id, student_no, class_id, enroll_year, del_flag) "
@@ -213,12 +216,14 @@ def test_concurrent_announcement_rag_task_consistency(client: TestClient, conc_d
 
     def _publish(i: int):
         # 模拟 Django 发布公告（P0-08：公告 + rag_task 同事务落库）
+        # P0-5：publisher_id 用夹具自身的用户（原硬编码 1 依赖种子用户，
+        # 在干净的测试库上会触发 sys_user 外键约束失败）。
         with engine.begin() as conn:
             res = conn.execute(text(
                 "INSERT INTO campus_announcement (title, content, ann_type, status, publisher_id, "
                 "publish_time, create_time, update_time, del_flag) "
-                "VALUES (:t, '并发公告正文', '1', '1', 1, NOW(), NOW(), NOW(), '0')"
-            ), {"t": f"并发公告-{i}"})
+                "VALUES (:t, '并发公告正文', '1', '1', :pub, NOW(), NOW(), NOW(), '0')"
+            ), {"t": f"并发公告-{i}", "pub": conc_data["teacher"]})
             aid = res.lastrowid
             conn.execute(text(
                 "INSERT INTO campus_rag_task (operation, source_type, source_id, status, "

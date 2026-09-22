@@ -1,9 +1,20 @@
 """pytest 共享夹具（T0-6/T0-7 单元测试）。
 
 约定：
+- **MySQL 测试库隔离（P0-5）**：测试强制指向**独立测试库** `campus_test`
+  （可用 `MYSQL_DB_TEST` 覆盖）。原实现直接使用 `settings.database_url` 连业务库
+  `campus`，在真实 `sys_user` / `campus_file` 上增删 —— 这是"174 个用例无法在
+  CI 中安全运行"的根因。护栏 `_require_test_db()`：库名不以 `_test` 结尾直接抛错，
+  与 Redis 侧 `_require_isolated_db()` 同款，杜绝"跑单测改业务库"。
+  表结构由 Django migrations（DDL 权威，P0-4）在首次运行时建到测试库。
 - 使用独立测试用户（user_id=999999，测试后清理），避免污染真实账号。
 - 上传目录指向 pytest 临时目录，测试后自动清理。
 - 依赖本机已运行的 MySQL(Docker 3307) / Redis(6379)。
+
+**用例级回滚说明（P0-5 的边界）**：应用代码通过 `engine.begin()` /
+`engine.connect()` 直接取连接（而非请求级 Session），无法用单个外层事务包住并
+回滚，因此本夹具采用「独立测试库 + 关键表会话结束清理」而非逐用例事务回滚；
+污染面已被限制在 `campus_test`，不影响业务库。
 
 **Redis 测试隔离（事故复盘 RAG专项测试报告 §5.6，P0）**：
 - 注意：**RediSearch 模块不支持在 db≠0 建索引**（`Cannot create index on
@@ -16,9 +27,15 @@
   杜绝"跑单测清空线上索引"再次发生（生产进程未设置该标记，不受影响）。
 """
 import os
+import subprocess
 import sys
+from pathlib import Path
 
 # ===== 测试环境标记（必须在导入任何 app 模块之前）=====
+# P0-5：强制切到独立测试库。pydantic-settings 的优先级为「真实环境变量 > .env」，
+# 故此处注入的环境变量会覆盖 .env 中的 MYSQL_DB_CAMPUS。
+TEST_DB = os.environ.get("MYSQL_DB_TEST", "campus_test")
+os.environ["MYSQL_DB_CAMPUS"] = TEST_DB
 os.environ.setdefault("RAG_WORKER_ENABLED", "0")   # 关闭 RAG Worker 后台调度（T7-3）
 os.environ["RAG_TEST_ISOLATION"] = "1"             # 触发 vector_store 写操作护栏
 
@@ -26,7 +43,8 @@ import pytest  # pyright: ignore[reportMissingImports]
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SERVER_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SERVER_DIR))
 
 from app.core.config import settings  # noqa: E402
 from app.core.database import engine  # noqa: E402
@@ -34,6 +52,53 @@ from app.core.security import create_access_token  # noqa: E402
 from app.main import app  # noqa: E402
 
 TEST_USER_ID = 999999
+
+
+def _require_test_db() -> None:
+    """P0-5 护栏：测试只允许跑在 `*_test` 库上（与 Redis 侧护栏同款）。"""
+    db_name = settings.MYSQL_DB_CAMPUS or settings.MYSQL_DB or ""
+    if not db_name.endswith("_test"):
+        raise RuntimeError(
+            f"测试护栏拒绝执行：当前库为 `{db_name}`，测试只允许运行在 `*_test` 库。"
+            f"请设置 MYSQL_DB_TEST={TEST_DB}（默认）后重试。"
+        )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _ensure_test_database() -> None:
+    """会话级：确保测试库存在且表结构就绪（DDL 复用 Django migrations，P0-4/P0-5）。
+
+    注意：建库必须用「**不指定库名**」的连接 —— 应用引擎的 URL 已指向
+    `campus_test`，库不存在时连不上，无法用它来建库（鸡生蛋问题）。
+    """
+    _require_test_db()
+    from sqlalchemy import create_engine as _create_engine
+
+    # mysql+pymysql://user:pass@host:port/<db> → 去掉库名，只连到实例
+    server_url = settings.database_url.rsplit("/", 1)[0] + "/"
+    bootstrap_engine = _create_engine(server_url, pool_pre_ping=True)
+    try:
+        with bootstrap_engine.begin() as conn:
+            conn.execute(
+                text(
+                    f"CREATE DATABASE IF NOT EXISTS `{TEST_DB}` "
+                    "DEFAULT CHARACTER SET utf8mb4 DEFAULT COLLATE utf8mb4_0900_ai_ci"
+                )
+            )
+    finally:
+        bootstrap_engine.dispose()
+
+    # 表结构由 Django migrations 权威创建/更新（禁止第二份手写 DDL，P0-4）。
+    # 每次会话都执行 migrate：已是最新时开销极小，但能保证模型改动后测试库
+    # 不会停留在旧结构上（否则会出现"本地测试库结构漂移"的假失败）。
+    manage_dir = SERVER_DIR.parent / "manage"
+    env = {**os.environ, "MYSQL_DB_CAMPUS": TEST_DB}
+    subprocess.run(
+        [sys.executable, "manage.py", "migrate", "--noinput"],
+        cwd=str(manage_dir),
+        env=env,
+        check=True,
+    )
 
 
 @pytest.fixture(scope="session", autouse=True)

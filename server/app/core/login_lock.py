@@ -7,7 +7,7 @@
   实现上两类后端均可用，互不干扰，恢复 Redis 后自动切回。
 
 Redis Key：
-- `login_fail:{username}`  失败计数（无 TTL，成功时删除）
+- `login_fail:{username}`  失败计数（**P1-4：滚动窗口 TTL**，成功时删除）
 - `login_lock:{username}`  锁定标记（TTL = 锁定分钟数）
 """
 import logging
@@ -25,6 +25,10 @@ _LOCK_KEY = "login_lock:{username}"
 _inmemory_lock = Lock()
 _inmemory_fail: dict[str, int] = {}          # username -> 失败次数
 _inmemory_locked: dict[str, float] = {}      # username -> 锁定截止时间戳
+
+# ---- 通用限流降级存储（P1-4：Redis 不可用时使用，单实例有效）----
+_inmemory_rate: dict[str, tuple[int, float]] = {}   # key -> (计数, 窗口截止时间戳)
+_rate_lock = Lock()
 
 
 def _max_fail() -> int:
@@ -69,30 +73,101 @@ def is_locked(username: str) -> tuple[bool, int]:
 
 
 def record_failure(username: str) -> tuple[bool, int]:
-    """记录一次登录失败。达到阈值则锁定。返回 (locked_now, remaining_seconds)。"""
+    """记录一次登录失败。达到阈值则锁定。返回 (locked_now, remaining_seconds)。
+
+    P1-4：`login_fail` 计数键加**滚动窗口 TTL**（= 锁定分钟数）。原实现只在登录
+    成功时删除该键，攻击者对 100 万个不存在的用户名各试一次，就会在 Redis 留下
+    100 万个永不回收的 key（内存耗尽型攻击面）。
+    """
     max_fail = _max_fail()
-    # Redis
-    r = _try_redis(lambda c, k: (c.incr(k), c),
-                   _FAIL_KEY.format(username=username))
-    if r is not None:
-        count, client = r
+    window = _lock_minutes() * 60
+    fail_key = _FAIL_KEY.format(username=username)
+    lock_key = _LOCK_KEY.format(username=username)
+
+    def _redis_record(client) -> tuple[bool, int]:
+        """Redis 计数 + 滚动窗口 TTL + 达阈值加锁。"""
+        count = client.incr(fail_key)
+        client.expire(fail_key, window)   # P1-4：每次失败刷新窗口，键不会永久驻留
         if count >= max_fail:
-            seconds = _lock_minutes() * 60
-            client.set(_LOCK_KEY.format(username=username), "1", ex=seconds)
-            client.delete(_FAIL_KEY.format(username=username))
-            logger.warning("账号已锁定 username=%s 时长=%ss", username, seconds)
-            return True, seconds
+            client.set(lock_key, "1", ex=window)
+            client.delete(fail_key)
+            return True, window
         return False, 0
+
+    r = _try_redis(_redis_record)
+    if r is not None:
+        locked, seconds = r
+        if locked:
+            logger.warning("账号已锁定 username=%s 时长=%ss", username, seconds)
+        return locked, seconds
     # 进程内
     with _inmemory_lock:
         _inmemory_fail[username] = _inmemory_fail.get(username, 0) + 1
         if _inmemory_fail[username] >= max_fail:
-            seconds = _lock_minutes() * 60
+            seconds = window
             _inmemory_locked[username] = time.time() + seconds
             _inmemory_fail.pop(username, None)
             logger.warning("账号已锁定（进程内） username=%s 时长=%ss", username, seconds)
             return True, seconds
         return False, 0
+
+
+def check_rate_limit(
+    scope: str,
+    identity: str,
+    limit: int,
+    window_seconds: int,
+    *,
+    key_override: str | None = None,
+    on_redis_failure: str = "inproc",
+) -> bool:
+    """滑动窗口限流（P1-4）。返回 True = 放行，False = 超限。
+
+    背景：原实现中登录限流与 RAG 限流的降级行为各自硬编码，且都直接 fail-open，
+    而账号锁定却降级为进程内计数 —— 同一系统两套降级口径、且散落各处。
+    现统一收敛到本函数，并把**降级策略显式化**为参数，避免"看代码才知道行为"：
+
+    Args:
+        scope: 业务域（用于日志与默认键命名空间）。
+        identity: 限流主体（IP / openid 等）。
+        limit: 窗口内允许的最大次数。
+        window_seconds: 窗口长度（秒）。
+        key_override: 显式指定 Redis 键（保持既有键名，兼容运维/测试的清理约定）。
+        on_redis_failure:
+            `"inproc"`（默认）—— Redis 故障时降级为进程内计数（单实例有效）；
+            适用**安全敏感**入口（登录/账号锁定）：宁可误拒也不放行爆破。
+            `"allow"` —— Redis 故障时放行；
+            适用**公开只读**入口（RAG 问答），与设计 9.7 降级矩阵一致
+            （可用性优先，且该接口无账号资产可爆破）。
+    """
+    if limit <= 0:
+        return True
+    key = key_override or f"rate:{scope}:{identity}"
+    now = time.time()
+
+    def _redis_hit(client) -> bool:
+        n = client.incr(key)
+        if n == 1:
+            client.expire(key, window_seconds)
+        return int(n) <= limit
+
+    allowed = _try_redis(_redis_hit)
+    if allowed is not None:
+        return bool(allowed)
+
+    if on_redis_failure == "allow":
+        # 设计 9.7 降级矩阵：RAG 限流遇 Redis 故障 → 放行（并已由 _try_redis 记告警）
+        logger.warning("限流 Redis 不可用，%s 按降级策略放行（scope=%s）", scope, identity)
+        return True
+
+    # 进程内降级（与账号锁定同一套降级口径）
+    with _rate_lock:
+        count, end = _inmemory_rate.get(key, (0, now + window_seconds))
+        if now > end:
+            count, end = 0, now + window_seconds
+        count += 1
+        _inmemory_rate[key] = (count, end)
+        return count <= limit
 
 
 def clear_failures(username: str) -> None:

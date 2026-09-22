@@ -29,7 +29,11 @@ from app.api import (  # pyright: ignore[reportImplicitRelativeImport]
     timetable,
 )
 from app.core.config import settings  # pyright: ignore[reportImplicitRelativeImport]
-from app.core.errors import BizError, ErrorCode  # pyright: ignore[reportImplicitRelativeImport]
+from app.core.errors import (  # pyright: ignore[reportImplicitRelativeImport]
+    BizError,
+    ErrorCode,
+    http_status_for,
+)
 from app.core.idempotency import IdempotencyMiddleware  # pyright: ignore[reportImplicitRelativeImport]
 from app.core.middleware import RequestLogMiddleware  # pyright: ignore[reportImplicitRelativeImport]
 from app.core.response import fail  # pyright: ignore[reportImplicitRelativeImport]
@@ -45,12 +49,14 @@ logger = logging.getLogger("campus")
 async def lifespan(app: FastAPI):
     """应用生命周期：启动/关闭日志（T0-3）+ RAG Worker 调度（T7-3，8.3）。"""
     logger.info("=== %s 启动 (env=%s) ===", settings.APP_NAME, settings.APP_ENV)
-    if settings.RAG_WORKER_ENABLED:
+    if settings.RAG_WORKER_ENABLED and settings.RAG_WORKER_IN_WEB:
         # T7-3：APScheduler 每 30s 一轮（崩溃恢复→领取→处理）+ 每日日志清理
+        # P1-14：默认**不在 Web 进程内**跑调度（RAG_WORKER_IN_WEB=0），
+        # 独立进程启动方式：cd server && python -m app.rag.worker（或 make rag-worker）
         from app.rag import worker  # pyright: ignore[reportImplicitRelativeImport]
         worker.start_scheduler()
     yield
-    if settings.RAG_WORKER_ENABLED:
+    if settings.RAG_WORKER_ENABLED and settings.RAG_WORKER_IN_WEB:
         from app.rag import worker  # pyright: ignore[reportImplicitRelativeImport]
         worker.stop_scheduler()
     logger.info("=== %s 关闭 ===", settings.APP_NAME)
@@ -86,37 +92,51 @@ app.add_middleware(IdempotencyMiddleware)
 
 @app.exception_handler(BizError)
 async def biz_error_handler(request: Request, exc: BizError):
-    """业务异常统一处理：转 HTTP 200 + { code, message, data }（6.1）。"""
-    return JSONResponse(status_code=200, content=fail(exc.code, exc.message, exc.data))
+    """业务异常统一处理：HTTP 状态按语义返回（P0-1）+ { code, message, data }（6.1）。
+
+    P0-1：不再一律 200 —— Nginx/WAF/APM/告警按 HTTP 状态码识别故障，
+    业务 code 仍保留在响应体内（双层映射，设计报告 6.1）。
+    """
+    return JSONResponse(
+        status_code=http_status_for(exc.code),
+        content=fail(exc.code, exc.message, exc.data),
+    )
 
 
 @app.exception_handler(RequestValidationError)
 async def validation_handler(request: Request, exc: RequestValidationError):
-    """请求参数校验失败：提取首个字段错误 → 4001。"""
+    """请求参数校验失败：提取首个字段错误 → 4001 / HTTP 400（P0-1）。"""
     first = exc.errors()[0] if exc.errors() else {}
     field = ".".join(str(x) for x in first.get("loc", []))
     msg = f"{field}: {first.get('msg', '参数错误')}" if field else "参数错误"
-    return JSONResponse(status_code=200, content=fail(ErrorCode.PARAM_ERROR, msg))
+    return JSONResponse(status_code=400, content=fail(ErrorCode.PARAM_ERROR, msg))
 
 
 @app.exception_handler(SQLAlchemyError)
 async def sqlalchemy_handler(request: Request, exc: SQLAlchemyError):
-    """SQLAlchemy 异常：记录日志 → 5000（数据库操作失败）。"""
+    """SQLAlchemy 异常：记录日志 → 5000 / HTTP 500（P0-1）。"""
     logger.error("SQLAlchemy error: %s", exc, exc_info=True)
-    return JSONResponse(status_code=200, content=fail(ErrorCode.SERVER_ERROR, "数据库操作失败"))
+    return JSONResponse(status_code=500, content=fail(ErrorCode.SERVER_ERROR, "数据库操作失败"))
 
 
 @app.exception_handler(StarletteHTTPException)
 async def http_handler(request: Request, exc: StarletteHTTPException):
-    """Starlette HTTP 异常（404/405 等）：统一转 5000 响应。"""
-    return JSONResponse(status_code=200, content=fail(ErrorCode.SERVER_ERROR, exc.detail))
+    """Starlette HTTP 异常（404/405 等）：保留原始 HTTP 状态码（P0-1）。
+
+    修复前 404/405 被吞成 HTTP 200 + code 5000，客户端无法区分
+    「地址写错」与「后端崩溃」，网关与监控亦无法识别。
+    """
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=fail(ErrorCode.SERVER_ERROR, exc.detail),
+    )
 
 
 @app.exception_handler(Exception)
 async def unknown_handler(request: Request, exc: Exception):
-    """兜底异常：记录完整堆栈 → 5000（服务异常）。"""
+    """兜底异常：记录完整堆栈 → 5000 / HTTP 500（P0-1）。"""
     logger.error("Unhandled error: %s", exc, exc_info=True)
-    return JSONResponse(status_code=200, content=fail(ErrorCode.SERVER_ERROR, "服务异常"))
+    return JSONResponse(status_code=500, content=fail(ErrorCode.SERVER_ERROR, "服务异常"))
 
 
 # ---- 路由 ----

@@ -18,7 +18,7 @@ MP_WIN_DIR := D:\bysj-mp-weixin
 PUBLIC_BASE := $(shell grep -E '^PUBLIC_BASE_URL=' $(ROOT)/.env | head -1 | cut -d= -f2-)
 
 .PHONY: help doctor all django fastapi h5 admin-web \
-        stop status logs init-db seed-demo \
+        stop status logs init-db seed-demo ddl-check ddl-export lock-deps rag-worker \
         h5-build mp-build mp-dev mp-sync-watch mp-open admin-web-build
 
 # ============================================================
@@ -41,8 +41,10 @@ help:
 > @echo "  状态/日志/数据库："
 > @echo "    make status          端口 + Docker 容器状态"
 > @echo "    make logs            查看日志（最后 10 行）"
-> @echo "    make init-db         数据库初始化（幂等）"
+> @echo "    make init-db         数据库初始化（仅 dev；会先备份并要求二次确认）"
 > @echo "    make seed-demo       灌入演示数据（幂等）"
+> @echo "    make ddl-check       DDL 漂移检测（模型 vs 迁移，CI 门禁）"
+> @echo "    make ddl-export      导出 DDL 产物 sql/schema_export.sql"
 > @echo ""
 > @echo "  构建（读根 .env PUBLIC_BASE_URL 注入统一地址）："
 > @echo "    make h5-build        H5 构建产物（dist/dev/h5）"
@@ -92,8 +94,15 @@ fastapi:
 > @sleep 5
 > @if ss -tlnp 2>/dev/null | grep -q ':8000 '; then echo "  成功：http://127.0.0.1:8000/docs"; else echo "  启动中，查看 make logs"; fi
 
+rag-worker:
+> @echo "===== 启动 RAG Worker 独立进程（P1-14，前台运行，Ctrl+C 停止）====="
+> @echo "  说明：RAG 索引重建/日志清理不再跑在 Web 进程内；生产可交 systemd 托管。"
+> @mkdir -p $(LOG_DIR)
+> @cd $(SERVER_DIR) && $(VENV_PY) -m app.rag.worker
+
 stop:
-> @echo "===== 停止全部服务（8000/8001/8081）====="
+> @echo "===== 停止全部服务（8000/8001/8081 + RAG Worker）====="
+> @pkill -f "app.rag.worker" 2>/dev/null && echo "  已停止 RAG Worker" || true
 > @for p in 8000 8001 8081; do if fuser -k $$p/tcp 2>/dev/null; then echo "  已停止端口 $$p"; else echo "  端口 $$p 未监听"; fi; done
 > @echo "完成。"
 
@@ -155,8 +164,24 @@ mp-open:
 # 数据库
 # ============================================================
 init-db:
-> @echo "===== 数据库初始化（T0-4，幂等）====="
+> @echo "===== 数据库初始化（T0-4）====="
+> @echo "  注意（P0-3）：本操作会重建/清空 campus 库，仅允许 APP_ENV=dev，"
+> @echo "  并会在执行前自动 mysqldump 备份 + 要求输入 YES 二次确认。"
 > @bash $(ROOT)/scripts/init_db.sh
+
+ddl-check:
+> @echo "===== DDL 漂移检测（P0-4：模型 vs 迁移）====="
+> @bash $(ROOT)/scripts/export_ddl.sh
+
+ddl-export:
+> @echo "===== 导出 DDL 产物（P0-4 → sql/schema_export.sql）====="
+> @bash $(ROOT)/scripts/export_ddl.sh --write
+
+lock-deps:
+> @echo "===== 生成依赖锁文件（P0-6：从零构建可复现）====="
+> @command -v pip-compile >/dev/null 2>&1 || { echo "  需先安装: pip install pip-tools"; exit 1; }
+> @cd $(SERVER_DIR) && pip-compile --output-file requirements.lock.txt requirements.txt
+> @echo "  完成: server/requirements.lock.txt（建议入库，CI/Docker 改为安装锁文件）"
 
 seed-demo:
 > @echo "===== 灌入演示数据（幂等）====="

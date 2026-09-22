@@ -122,30 +122,34 @@ def _validation_codes(detail) -> set:
 
 
 def api_exception_handler(exc, context):
-    """DRF 统一异常处理：业务异常返回 HTTP 200 + { code, message, data }（与应用端一致）。"""
+    """DRF 统一异常处理：响应体 `{ code, message, data }` 与应用端一致，
+    HTTP 状态码按语义返回（P0-1，双层映射，设计报告 6.1）。
+
+    P0-1：不再一律 HTTP 200 —— 否则 Nginx/WAF/APM/告警把 5xx 统计成成功请求（故障静默）。
+    """
     if isinstance(exc, ScheduleConflictError):
-        return Response({"code": 4091, "message": str(exc), "data": None}, status=200)
+        return Response({"code": 4091, "message": str(exc), "data": None}, status=409)
     if isinstance(exc, IntegrityError):
         return Response(
             {"code": 4091, "message": "数据已存在：唯一编码或组合重复，请检查", "data": None},
-            status=200,
+            status=409,
         )
     if isinstance(exc, ValidationError):
         # 唯一约束（UniqueValidator/UniqueTogetherValidator code='unique'）→ 4091 冲突
         if "unique" in _validation_codes(exc.detail):
             return Response(
                 {"code": 4091, "message": "数据已存在：唯一编码或组合重复，请检查", "data": None},
-                status=200,
+                status=409,
             )
         return Response(
-            {"code": 4001, "message": _extract_message(exc.detail), "data": None}, status=200
+            {"code": 4001, "message": _extract_message(exc.detail), "data": None}, status=400
         )
     if isinstance(exc, NotAuthenticated):
-        return Response({"code": 4011, "message": "未登录或登录已过期", "data": None}, status=200)
+        return Response({"code": 4011, "message": "未登录或登录已过期", "data": None}, status=401)
     if isinstance(exc, PermissionDenied):
-        return Response({"code": 4031, "message": "无操作权限", "data": None}, status=200)
+        return Response({"code": 4031, "message": "无操作权限", "data": None}, status=403)
     if isinstance(exc, NotFound):
-        return Response({"code": 4001, "message": "记录不存在", "data": None}, status=200)
+        return Response({"code": 4001, "message": "记录不存在", "data": None}, status=404)
     return drf_exception_handler(exc, context)
 
 
@@ -190,6 +194,36 @@ def _check_schedule_conflict(term_id, class_id, teacher_id, day_of_week,
             f"《{off.course.course_name}》（第{teacher_conflict.week_start}~{teacher_conflict.week_end}周），"
             f"与本次节次 {period_start}~{period_end} 重叠"
         )
+
+
+def _lock_schedule_day_scope(term_id, day_of_week) -> None:
+    """FOR UPDATE 锁定「待插入表」的当日排课范围（P1-10）。
+
+    **原实现缺陷**：`_check_schedule_conflict()` 检索的是 `campus_course_schedule`
+    （找重叠时段），而 `_lock_conflict_offering_rows()` 锁的是 `campus_course_offering`
+    的行 —— **锁 A 表、插 B 表**，冲突检测与写入不在同一封锁范围。两个并发排课请求
+    各自锁住不同的 offering 行集，InnoDB 无法阻止第二个请求在间隙中插入重叠 schedule：
+    同事务只保证了原子性，**没有保证隔离性**。
+
+    **修复**：在冲突检测之前，对 `campus_course_schedule` 按 (term, day_of_week)
+    做一次当前读 + FOR UPDATE —— 加锁对象与插入对象一致，该扫描范围内的并发插入
+    会被 InnoDB 的 next-key/gap 锁串行化，从而在数据库层被互斥。
+
+    加锁顺序固定为「先 schedule 当日范围 → 再 offering 行」，所有写路径一致，
+    避免交叉加锁导致死锁。
+
+    注（更强的保证，需设计变更后实施）：可用「时间槽占用表」把互斥下沉为
+    数据库唯一约束（`term_id + class_id + day_of_week + period_start` + 物理删除），
+    但 `campus_course_schedule` 走 `del_flag` 逻辑删除，直接加唯一索引会使
+    *已删除的槽位仍占用唯一键*，反而阻止重新排课，故不在此处草率引入。
+    """
+    qs = (
+        CampusCourseSchedule.objects
+        .filter(offering__term_id=term_id, day_of_week=day_of_week, del_flag="0")
+        .order_by("id")
+    )
+    # 当前读 + 行/间隙锁：必须消费结果集才真正加锁
+    list(qs.select_for_update())
 
 
 def _lock_conflict_offering_rows(term_id, class_id, teacher_id) -> None:
@@ -343,6 +377,9 @@ class ScheduleViewSet(AdminModelViewSet):
         for attempt in range(3):  # 死锁重试（上限 3 次，B-04）
             try:
                 with transaction.atomic():
+                    # P1-10：先锁「插入目标表」的当日范围（与插入对象一致），
+                    # 再锁 offering 行；顺序固定，避免交叉死锁。
+                    _lock_schedule_day_scope(term_id, day)
                     _lock_conflict_offering_rows(term_id, class_id, teacher_id)
                     _check_schedule_conflict(
                         term_id, class_id, teacher_id, day, ps, pe, exclude_id

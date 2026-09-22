@@ -71,7 +71,7 @@ def test_change_password_wrong_old(client: TestClient, disable_login_rate):
     resp = client.put("/api/auth/password",
                       json={"old_password": "wrong-old", "new_password": "newpass456"},
                       headers={"Authorization": f"Bearer {token}"})
-    assert resp.status_code == 200
+    assert resp.status_code == 401
     assert resp.json()["code"] == 4102
 
 
@@ -81,14 +81,14 @@ def test_change_password_same(client: TestClient, disable_login_rate):
     resp = client.put("/api/auth/password",
                       json={"old_password": "oldpass123", "new_password": "oldpass123"},
                       headers={"Authorization": f"Bearer {token}"})
-    assert resp.status_code == 200
+    assert resp.status_code == 400
     assert resp.json()["code"] == 4001
 
 
 def test_change_password_requires_login(client: TestClient):
     """未登录 → 4011。"""
     resp = client.put("/api/auth/password", json={"old_password": "oldpass123", "new_password": "newpass456"})
-    assert resp.status_code == 200
+    assert resp.status_code == 401
     assert resp.json()["code"] == 4011
 
 
@@ -110,7 +110,7 @@ def test_change_password_success_old_token_invalid(client: TestClient, disable_l
 
     # 旧 token 立即失效（password_version 自增 → 4011）
     resp = client.delete("/api/auth/wechat/unbind", headers={"Authorization": f"Bearer {old_token}"})
-    assert resp.status_code == 200
+    assert resp.status_code == 401
     assert resp.json()["code"] == 4011
 
     # 新密码登录成功
@@ -147,7 +147,7 @@ def test_lock_after_5_failures(client: TestClient, disable_login_rate):
     assert lock_mod.is_locked("lockuser")[0] is True
     # 锁定期间正确密码也拒绝
     resp = client.post("/api/auth/login", json={"username": "lockuser", "password": "lockpass123"})
-    assert resp.status_code == 200
+    assert resp.status_code == 403
     assert resp.json()["code"] == 4101
 
 

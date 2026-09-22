@@ -1,36 +1,43 @@
+# 依赖声明（P0-6：全部加**上界**，避免大版本浮动导致"半年后装不上/行为不同"）
+# 说明：本轮先以"上下界"收敛可复现性；完整锁定用 `make lock-deps`
+#       （pip-compile 生成 requirements.lock.txt）后纳入 CI。
+
 # Web 框架
-fastapi>=0.100
-uvicorn[standard]>=0.23
-pydantic>=2.5
-pydantic-settings>=2.1
+fastapi>=0.100,<1.0
+uvicorn[standard]>=0.23,<1.0
+pydantic>=2.5,<3.0
+pydantic-settings>=2.1,<3.0
 
 # 数据库
-SQLAlchemy>=2.0
-PyMySQL>=1.1
-cryptography>=41.0
+SQLAlchemy>=2.0,<3.0
+PyMySQL>=1.1,<2.0
+cryptography>=41.0,<50.0
 
 # Redis（缓存+向量+限流）
-redis>=5.0
+redis>=5.0,<9.0
 
 # ===== RAG（T7-1，8.2 技术底座）=====
-openai>=1.50          # 方舟 OpenAI 兼容接口（生成+Embedding+Agnes 兜底）
-langchain>=1.0        # RAG 编排（自定义 Retriever，不用内置 VectorStore 抽象）
-langchain-openai>=1.0 # ChatOpenAI 生成端入口
-numpy>=2.0            # 2560 维 float32 序列化
-APScheduler>=3.10     # Worker 定时调度（30s 一轮 + 日志清理）
+openai>=1.50,<4.0          # 方舟 OpenAI 兼容接口（生成+Embedding+Agnes 兜底）
+langchain>=1.0,<2.0        # RAG 编排（自定义 Retriever，不用内置 VectorStore 抽象）
+langchain-openai>=1.0,<2.0 # ChatOpenAI 生成端入口
+numpy>=2.0,<3.0            # 2560 维 float32 序列化
+APScheduler>=3.10,<4.0     # Worker 定时调度（30s 一轮 + 日志清理）
 
 # JWT
-PyJWT>=2.8
+PyJWT>=2.8,<3.0
 
 # 工具
-python-multipart>=0.0.6
-python-dotenv>=1.0
+python-multipart>=0.0.6,<1.0
+python-dotenv>=1.0,<2.0
 
 # 测试（T0-6/T0-7 单元测试）
-pytest>=8.0
-httpx>=0.27
+pytest>=8.0,<10.0
+httpx>=0.27,<1.0
 
 # ===== 管理端（T0-1/T0-2，Django 5.2 LTS 对齐 Python 3.14，A-01）=====
 Django>=5.2,<5.3
-djangorestframework>=3.15
-djangorestframework-simplejwt>=5.3
+djangorestframework>=3.15,<4.0
+djangorestframework-simplejwt>=5.3,<6.0
+
+# ===== 生产进程（P0-6：管理端生产禁止 runserver）=====
+gunicorn>=22.0,<24.0

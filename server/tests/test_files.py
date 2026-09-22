@@ -29,7 +29,7 @@ def _upload(client, headers, filename, data, mime, idem_key=None):
 def test_upload_without_token_unauthorized(client):
     """未登录上传 → 4011。"""
     r = _upload(client, {}, "a.png", PNG_DATA, "image/png")
-    assert r.status_code == 200
+    assert r.status_code == 401
     assert r.json()["code"] == 4011
 
 
@@ -38,7 +38,7 @@ def test_download_without_token_unauthorized(client, auth_headers):
     up = _upload(client, auth_headers, "a.png", PNG_DATA, "image/png")
     file_id = up.json()["data"]["id"]
     r = client.get(f"/api/files/{file_id}")
-    assert r.status_code == 200
+    assert r.status_code == 401
     assert r.json()["code"] == 4011
 
 
@@ -77,7 +77,7 @@ def test_upload_and_download_ok(client, auth_headers):
 def test_upload_disallowed_extension(client, auth_headers, filename, mime):
     """白名单外扩展名（exe/sh/html/php）→ 4001 拒绝。"""
     r = _upload(client, auth_headers, filename, b"MZ\x90\x00", mime)
-    assert r.status_code == 200
+    assert r.status_code == 400
     assert r.json()["code"] == 4001
 
 
@@ -87,7 +87,7 @@ def test_upload_over_size_limit(client, auth_headers):
     """超过 10MB 大小上限 → 4001。"""
     big = PNG_HEADER + b"\x00" * (11 * 1024 * 1024)  # >10MB
     r = _upload(client, auth_headers, "big.png", big, "image/png")
-    assert r.status_code == 200
+    assert r.status_code == 400
     assert r.json()["code"] == 4001
     assert "超过限制" in r.json()["message"]
 
@@ -98,7 +98,7 @@ def test_upload_mime_mismatch(client, auth_headers):
     """扩展名与 MIME 不匹配 → 4001。"""
     # 扩展名 png 但 Content-Type 是 pdf
     r = _upload(client, auth_headers, "pic.png", PNG_DATA, "application/pdf")
-    assert r.status_code == 200
+    assert r.status_code == 400
     assert r.json()["code"] == 4001
 
 
@@ -108,7 +108,7 @@ def test_upload_magic_mismatch(client, auth_headers):
     """文件头（magic bytes）与声明类型不符 → 4001 拒绝伪装文件。"""
     # 声明为 png（扩展名 + MIME 都对），但文件头不是 PNG —— 伪装文件应拒绝
     r = _upload(client, auth_headers, "fake.png", b"#!/bin/sh echo hacked", "image/png")
-    assert r.status_code == 200
+    assert r.status_code == 400
     assert r.json()["code"] == 4001
 
 
@@ -122,20 +122,28 @@ def test_upload_magic_mismatch(client, auth_headers):
 def test_upload_path_traversal_rejected(client, auth_headers, filename):
     """路径穿越/危险文件名 → 4001 拒绝。"""
     r = _upload(client, auth_headers, filename, PNG_DATA, "image/png")
-    assert r.status_code == 200
+    assert r.status_code == 400
     assert r.json()["code"] == 4001
 
 
 # ---------- 幂等（T0-6 中间件集成） ----------
 
 def test_upload_idempotent_with_same_key(client, auth_headers):
-    """相同 Idempotency-Key 重复上传只落一条记录，返回首次结果。"""
+    """相同 Idempotency-Key 重复上传只落一条记录，返回首次结果。
+
+    幂等键**按运行生成唯一值**（P0-5 测试隔离）：Redis 幂等缓存 TTL 为 24h，
+    若使用固定键，第二次运行会直接命中上一轮缓存 —— 而 DB 行已被会话清理删除，
+    断言便与真实状态不符（"DB 里没有却返回了 id"）。
+    """
+    import uuid
+
     from sqlalchemy import text
 
     from app.core.database import engine
 
-    r1 = _upload(client, auth_headers, "idem.png", PNG_DATA, "image/png", idem_key="idem-f1")
-    r2 = _upload(client, auth_headers, "idem.png", PNG_DATA, "image/png", idem_key="idem-f1")
+    key = "idem-f1-" + uuid.uuid4().hex
+    r1 = _upload(client, auth_headers, "idem.png", PNG_DATA, "image/png", idem_key=key)
+    r2 = _upload(client, auth_headers, "idem.png", PNG_DATA, "image/png", idem_key=key)
     assert r1.json()["data"]["id"] == r2.json()["data"]["id"]
     assert r1.json()["data"]["storage_path"] == r2.json()["data"]["storage_path"]
 

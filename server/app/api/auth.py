@@ -26,7 +26,12 @@ from app.core.errors import (
     RateLimitedError,
     UnauthorizedError,
 )
-from app.core.login_lock import clear_failures, is_locked, record_failure
+from app.core.login_lock import (
+    check_rate_limit,
+    clear_failures,
+    is_locked,
+    record_failure,
+)
 from app.core.response import success
 from app.core.security import (
     check_django_password,
@@ -55,22 +60,32 @@ class UserOut(BaseModel):
     role_code: str
 
 
-def _check_login_rate(ip: str) -> None:
-    """登录 IP 限流（B-13，LOGIN_RATE_PER_MIN 次/分钟）；Redis 不可用时放行并告警。"""
-    limit = getattr(settings, "LOGIN_RATE_PER_MIN", 5) or 5
-    try:
-        from app.core.redis_client import redis_client
+# P1-5：账号不存在时用的"假哈希"，用于抹平响应时间差（延迟构造，避免 import 时开销）
+_dummy_hash: str | None = None
 
-        key = f"login_rate:{ip}"
-        n = redis_client.incr(key)
-        if n == 1:
-            redis_client.expire(key, 60)
-        if n > limit:
-            raise RateLimitedError("登录过于频繁，请稍后再试")
-    except RateLimitedError:
-        raise
-    except Exception:  # noqa: BLE001 — Redis 不可用放行
-        logger.warning("登录限流 Redis 不可用，本次放行")
+
+def _equalize_timing(password: str) -> None:
+    """P1-5：账号不存在时执行一次等价开销的密码校验，抹平时序侧信道。
+
+    原实现「账号不存在 → 立即返回」与「账号存在 → 执行 PBKDF2（百万次迭代）」
+    的响应时间差稳定可测，即便统一返回文案 4102，仍可据此枚举有效账号。
+    """
+    global _dummy_hash
+    if _dummy_hash is None:
+        _dummy_hash = make_django_password("timing-equalization-dummy-password")
+    check_django_password(password, _dummy_hash)
+
+
+def _check_login_rate(ip: str) -> None:
+    """登录 IP 限流（B-13，LOGIN_RATE_PER_MIN 次/分钟）。
+
+    P1-4：统一走 `login_lock.check_rate_limit` —— Redis 故障时降级为**进程内计数**
+    （原实现为 fail-open 直接放行，与账号锁定的降级口径不一致）。
+    """
+    limit = getattr(settings, "LOGIN_RATE_PER_MIN", 5) or 5
+    if not check_rate_limit("login", ip, limit, 60):
+        logger.warning("登录限流触发 ip=%s（阈值 %s/分钟）", ip, limit)
+        raise RateLimitedError("登录过于频繁，请稍后再试")
 
 
 @router.post("/login")
@@ -98,8 +113,9 @@ def login(body: LoginIn, request: Request) -> dict:
             {"u": body.username},
         ).first()
 
-    # 账号不存在（统一返回 4102 避免账号枚举；同样计入失败锁定）
+    # 账号不存在（统一返回 4102 避免账号枚举；同样计入失败锁定；P1-5 抹平时序差）
     if row is None:
+        _equalize_timing(body.password)
         record_failure(body.username)
         logger.info("登录失败：账号不存在 username=%s ip=%s", body.username, client_ip)
         raise PasswordWrongError()
@@ -222,8 +238,9 @@ def wechat_login(body: WechatLoginIn, request: Request) -> dict:
         logger.info("微信绑定被拒：账号锁定中 username=%s", body.username)
         raise AccountLockedError(f"账号已锁定，请 {max(1, (remaining + 59) // 60)} 分钟后再试")
     row = _find_user_by_username(body.username)
-    # 账号不存在统一返回 4102（防账号枚举；同样计入失败锁定）
+    # 账号不存在统一返回 4102（防账号枚举；同样计入失败锁定；P1-5 抹平时序差）
     if row is None:
+        _equalize_timing(body.password)
         record_failure(body.username)
         logger.info("微信绑定：账号不存在 username=%s", body.username)
         raise PasswordWrongError()

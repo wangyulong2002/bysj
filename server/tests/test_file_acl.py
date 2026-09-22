@@ -60,7 +60,7 @@ def test_private_file_other_user_forbidden(client, auth_headers, test_user_id):
     from app.core.security import create_access_token
     other_headers = {"Authorization": f"Bearer {create_access_token(user_id=888888, role_code='student', password_version=0)}"}
     r = client.get(f"/api/files/{file_id}", headers=other_headers)
-    assert r.status_code == 200
+    assert r.status_code in (401, 403)
     assert r.json()["code"] in (4011, 4032), "他人访问私有文件应被拒绝（4011 认证失败或 4032 越权，B-03）"
 
 
@@ -83,5 +83,5 @@ def test_signed_url_flow(client, auth_headers):
     # 篡改 token → 拒绝
     bad = url.replace("token=", "token=deadbeef")
     rb = client.get(bad)
-    assert rb.status_code == 200
+    assert rb.status_code == 400
     assert rb.json()["code"] == 4001

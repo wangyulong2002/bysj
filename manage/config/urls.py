@@ -10,7 +10,12 @@ from django.conf import settings
 from django.http import HttpResponse
 from django.urls import include, path
 from django.views import View
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+
+from users.views import (
+    AdminLogoutView,
+    AdminTokenObtainPairView,
+    AdminTokenRefreshView,
+)
 
 
 class AdminWebView(View):
@@ -34,9 +39,10 @@ class AdminWebView(View):
 
 
 urlpatterns = [
-    # /admin/api/**（P1-9：JWT 认证）
-    path("admin/api/auth/login", TokenObtainPairView.as_view(), name="admin_api_token_obtain"),
-    path("admin/api/auth/refresh", TokenRefreshView.as_view(), name="admin_api_token_refresh"),
+    # /admin/api/**（P1-9：JWT 认证；P1-1：password_version 校验 + refresh 走 httpOnly Cookie）
+    path("admin/api/auth/login", AdminTokenObtainPairView.as_view(), name="admin_api_token_obtain"),
+    path("admin/api/auth/refresh", AdminTokenRefreshView.as_view(), name="admin_api_token_refresh"),
+    path("admin/api/auth/logout", AdminLogoutView.as_view(), name="admin_api_token_logout"),
     # 业务管理接口（院系/班级/学生/教师/课程/学期/教学班/排课/公告）
     path("admin/api/", include("apps.urls")),
     # 自建管理前端 SPA（方案 2）：/admin/ 与子路径均返回 index.html

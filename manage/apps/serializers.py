@@ -5,11 +5,9 @@
 - 外键关联展示名称（department_name/class_name/teacher_name 等）；
 - 请求/响应统一用 DB 字段名（class_id/offering_id 等）。
 """
-import random
-import string
-import time
-
 from django.contrib.auth import get_user_model
+from django.db import transaction
+from django.utils import timezone
 
 from rest_framework import serializers
 
@@ -27,19 +25,42 @@ from .models import (
     CampusStudent,
     CampusTeacher,
     CampusTerm,
+    SysCodeSequence,
 )
 
 User = get_user_model()
 
 
-def _gen_unique_code(prefix: str, qs, field: str, length: int = 6) -> str:
-    """自动生成唯一业务编码：prefix + 随机字母数字（如 S20260801），冲突自动重试，时间戳兜底。"""
-    chars = string.ascii_uppercase + string.digits
-    for _ in range(30):
-        code = prefix + "".join(random.choices(chars, k=length))
-        if not qs.filter(**{field: code}).exists():
-            return code
-    return f"{prefix}{int(time.time())}"
+def _gen_unique_code(prefix: str, qs=None, field: str = "", length: int = 6) -> str:
+    """生成唯一业务编码（P1-12：改为序列表 + `SELECT ... FOR UPDATE` 原子分配）。
+
+    **原实现的问题**（审核报告 P1-12）：
+    - `random.choices` 非加密安全随机，且是 check-then-act（并发下靠唯一索引兜）；
+    - 30 次重试耗尽后回退 `{prefix}{时间戳}` —— 同一秒并发生成必然唯一冲突，
+      且长度与正常编码不一致；
+    - 业务语义为 0：学号/工号随机 6~8 位后无法排序、无法按学号推断年级、
+      无法与教务对接。
+
+    **新实现**：按 `(prefix, year)` 在 `sys_code_sequence` 上取号并自增，
+    取号动作在事务内对序列行加行锁，多实例部署下仍严格单调、不重复：
+    编码形态 `{prefix}{年份}{序号:补零}`（如 `S20260001`）。
+
+    参数 `qs` / `field` 保留仅为兼容既有调用点（唯一性不再依赖"先查后写"，
+    而由序列表原子分配 + 目标表唯一索引双重保证）。
+    """
+    year = timezone.now().year
+    with transaction.atomic():
+        SysCodeSequence.objects.get_or_create(
+            prefix=prefix, year=year,
+            defaults={"last_value": 0, "seq_width": length},
+        )
+        # 当前读 + 行锁：并发取号在同一行上串行化
+        seq = SysCodeSequence.objects.select_for_update().get(prefix=prefix, year=year)
+        seq.last_value += 1
+        seq.update_time = timezone.now()
+        seq.save(update_fields=["last_value", "update_time"])
+        value, width = seq.last_value, (seq.seq_width or length)
+    return f"{prefix}{year}{value:0{width}d}"
 
 
 class DepartmentSerializer(serializers.ModelSerializer):

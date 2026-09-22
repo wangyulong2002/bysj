@@ -1,0 +1,83 @@
+# CI（P0-6）：此前项目零 CI / 零 lint / 依赖不可复现。
+# 本流水线提供最小可用闭环：lint（只挡明显错误）→ DDL 漂移门禁 → 后端测试。
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    name: lint + ddl-check + pytest
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: ci-pass
+          MYSQL_DATABASE: campus_test
+          TZ: Asia/Shanghai
+        ports:
+          - 3307:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci-pass"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+      redis:
+        image: redis/redis-stack:latest
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      # ---- 服务与运行环境 ----
+      APP_ENV: dev
+      DEBUG: "false"
+      TZ: Asia/Shanghai
+      # ---- MySQL（对齐 .env.example 的 3307 约定；测试库独立，P0-5）----
+      MYSQL_HOST: 127.0.0.1
+      MYSQL_PORT: "3307"
+      MYSQL_USER: root
+      MYSQL_PASS: ci-pass
+      MYSQL_DB_CAMPUS: campus_test
+      MYSQL_DB_TEST: campus_test
+      # ---- Redis ----
+      REDIS_URL: redis://127.0.0.1:6379/0
+      # ---- 密钥（CI 专用占位值，禁止用于任何真实环境）----
+      JWT_SECRET: ci-only-jwt-secret-not-for-production
+      DJANGO_SECRET_KEY: ci-only-django-secret-not-for-production
+      # ---- 关闭需外部配额的能力（RAG Worker / 上游模型）----
+      RAG_WORKER_ENABLED: "0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r server/requirements.txt ruff
+
+      - name: Lint（只挡明显错误：语法错误 + 未定义名）
+        run: ruff check server manage
+
+      - name: DDL 漂移门禁（P0-4：模型 vs 迁移必须一致）
+        working-directory: manage
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: 建测试库表结构（DDL 权威 = migrations）
+        working-directory: manage
+        run: python manage.py migrate --noinput
+
+      - name: 后端测试（P0-5：独立库 campus_test）
+        run: pytest -q
